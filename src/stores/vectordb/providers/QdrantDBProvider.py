@@ -2,8 +2,9 @@ from qdrant_client import models, QdrantClient
 from ..VectorDBInterface import VectorDBInterface
 from ..VectorDBEnums import DistanceMethodEnums
 import logging
-from typing import List
+from typing import List, Optional
 from models.db_schemes import RetrievedDocument
+
 
 class QdrantDBProvider(VectorDBInterface):
 
@@ -29,23 +30,23 @@ class QdrantDBProvider(VectorDBInterface):
 
     def is_collection_existed(self, collection_name: str) -> bool:
         return self.client.collection_exists(collection_name=collection_name)
-    
+
     def list_all_collections(self) -> List:
         return self.client.get_collections()
-    
+
     def get_collection_info(self, collection_name: str) -> dict:
         return self.client.get_collection(collection_name=collection_name)
-    
+
     def delete_collection(self, collection_name: str):
         if self.is_collection_existed(collection_name):
             return self.client.delete_collection(collection_name=collection_name)
-        
-    def create_collection(self, collection_name: str, 
+
+    def create_collection(self, collection_name: str,
                                 embedding_size: int,
                                 do_reset: bool = False):
         if do_reset:
             _ = self.delete_collection(collection_name=collection_name)
-        
+
         if not self.is_collection_existed(collection_name):
             _ = self.client.create_collection(
                 collection_name=collection_name,
@@ -55,18 +56,43 @@ class QdrantDBProvider(VectorDBInterface):
                 )
             )
 
+            for field in ["project_id", "city", "doc_type", "asset_id"]:
+                try:
+                    self.client.create_payload_index(
+                        collection_name=collection_name,
+                        field_name=f"metadata.{field}",
+                        field_schema=models.PayloadSchemaType.KEYWORD,
+                    )
+                except Exception as e:
+                    self.logger.warning(f"Could not create index on metadata.{field}: {e}")
+
             return True
-        
+
         return False
-    
+
+    def _build_filter(self, filter: dict) -> Optional[models.Filter]:
+        if not filter:
+            return None
+
+        conditions = []
+        for key, value in filter.items():
+            conditions.append(
+                models.FieldCondition(
+                    key=f"metadata.{key}",
+                    match=models.MatchValue(value=value)
+                )
+            )
+
+        return models.Filter(must=conditions)
+
     def insert_one(self, collection_name: str, text: str, vector: list,
-                        metadata: dict = None, 
+                        metadata: dict = None,
                         record_id: str = None):
-        
+
         if not self.is_collection_existed(collection_name):
             self.logger.error(f"Can not insert new record to non-existed collection: {collection_name}")
             return False
-        
+
         try:
             _ = self.client.upload_records(
                 collection_name=collection_name,
@@ -85,11 +111,11 @@ class QdrantDBProvider(VectorDBInterface):
             return False
 
         return True
-    
-    def insert_many(self, collection_name: str, texts: list, 
-                        vectors: list, metadata: list = None, 
+
+    def insert_many(self, collection_name: str, texts: list,
+                        vectors: list, metadata: list = None,
                         record_ids: list = None, batch_size: int = 50):
-        
+
         if metadata is None:
             metadata = [None] * len(texts)
 
@@ -126,23 +152,43 @@ class QdrantDBProvider(VectorDBInterface):
                 return False
 
         return True
-        
-    def search_by_vector(self, collection_name: str, vector: list, limit: int = 5):
+
+    def search_by_vector(self, collection_name: str, vector: list, limit: int = 5, filter: Optional[dict] = None):
+
+        query_filter = self._build_filter(filter) if filter else None
 
         results = self.client.search(
             collection_name=collection_name,
             query_vector=vector,
-            limit=limit
+            limit=limit,
+            query_filter=query_filter
         )
 
         if not results or len(results) == 0:
             return None
-        
+
         return [
             RetrievedDocument(**{
                 "score": result.score,
-                "text": result.payload["text"],
+                "text": result.payload.get("text", ""),
+                "metadata": result.payload.get("metadata", {}),
             })
             for result in results
         ]
 
+    def delete_by_filter(self, collection_name: str, filter: dict):
+        if not self.is_collection_existed(collection_name):
+            return False
+
+        query_filter = self._build_filter(filter)
+        if not query_filter:
+            return False
+
+        self.client.delete(
+            collection_name=collection_name,
+            points_selector=models.FilterSelector(
+                filter=query_filter
+            )
+        )
+
+        return True

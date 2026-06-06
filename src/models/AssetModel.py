@@ -58,5 +58,45 @@ class AssetModel(BaseDataModel):
         
         return None
 
+    async def get_uncategorized_assets(self):
+        records = await self.collection.find({
+            "asset_config.city": {"$in": [None, "unknown"]}
+        }).to_list(length=None)
 
-    
+        return [
+            Asset(**record)
+            for record in records
+        ]
+
+    async def update_asset_city(self, asset_id: str, city: str, doc_type: str = None):
+        record = await self.collection.find_one({
+            "_id": ObjectId(asset_id) if isinstance(asset_id, str) else asset_id
+        })
+
+        if not record:
+            return None
+
+        asset_config = record.get("asset_config", {}) or {}
+        asset_config["city"] = city
+        if doc_type:
+            asset_config["doc_type"] = doc_type
+
+        await self.collection.update_one(
+            {"_id": ObjectId(asset_id) if isinstance(asset_id, str) else asset_id},
+            {"$set": {"asset_config": asset_config}}
+        )
+
+        record["asset_config"] = asset_config
+        return Asset(**record)
+
+    async def delete_asset_by_id(self, asset_id: str):
+        result = await self.collection.delete_one({
+            "_id": ObjectId(asset_id) if isinstance(asset_id, str) else asset_id
+        })
+        return result.deleted_count
+
+    async def delete_assets_by_project_id(self, project_id):
+        result = await self.collection.delete_many({
+            "asset_project_id": ObjectId(project_id) if isinstance(project_id, str) else project_id
+        })
+        return result.deleted_count

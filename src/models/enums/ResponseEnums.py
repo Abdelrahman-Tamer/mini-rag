@@ -19,4 +19,10 @@ class ResponseSignal(Enum):
     VECTORDB_SEARCH_SUCCESS = "vectordb_search_success"
     RAG_ANSWER_ERROR = "rag_answer_error"
     RAG_ANSWER_SUCCESS = "rag_answer_success"
-    
+
+    CHAT_SUCCESS = "chat_success"
+    CHAT_ERROR = "chat_error"
+    NO_RELEVANT_DOCUMENTS = "no_relevant_documents"
+    DELETE_SUCCESS = "delete_success"
+    DELETE_ERROR = "delete_error"
+    CITY_UPDATE_SUCCESS = "city_update_success"

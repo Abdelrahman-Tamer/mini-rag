@@ -6,8 +6,12 @@ class Settings(BaseSettings):
     APP_VERSION: str
 
     FILE_ALLOWED_TYPES: list
+    FILE_ALLOWED_EXTENSIONS: list = [".txt", ".pdf", ".csv", ".docx"]
     FILE_MAX_SIZE: int
     FILE_DEFAULT_CHUNK_SIZE: int
+    VECTOR_DB_COLLECTION_NAME: str = "tourism_knowledge_base"
+    DEFAULT_CITY: str = "unknown"
+    DEFAULT_DOC_TYPE: str = "general"
 
     MONGODB_URL: str
     MONGODB_DATABASE: str

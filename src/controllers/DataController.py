@@ -54,4 +54,16 @@ class DataController(BaseController):
 
         return cleaned_file_name
 
+    def extract_city_type(self, filename: str) -> dict:
+        name_without_ext = filename.rsplit(".", 1)[0]
+        parts = name_without_ext.split("_")
+
+        result = {"city": None, "doc_type": None}
+
+        if len(parts) >= 2:
+            result["city"] = parts[0].lower().strip()
+            result["doc_type"] = "_".join(parts[1:]).lower().strip()
+
+        return result
+
 
