@@ -11,8 +11,8 @@ class SearchRequest(BaseModel):
 class ChatRequest(BaseModel):
     text: str
     limit: Optional[int] = 5
-    city: Optional[str] = None
     doc_type: Optional[str] = None
+    history: Optional[List[dict]] = None
 
 class SourceInfo(BaseModel):
     document_name: str

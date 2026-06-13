@@ -26,3 +26,8 @@ class ResponseSignal(Enum):
     DELETE_SUCCESS = "delete_success"
     DELETE_ERROR = "delete_error"
     CITY_UPDATE_SUCCESS = "city_update_success"
+    MULTI_UPLOAD_SUCCESS = "multi_upload_success"
+    MULTI_UPLOAD_PARTIAL = "multi_upload_partial"
+    MULTI_UPLOAD_FAILED = "multi_upload_failed"
+
+    INVALID_QUERY = "invalid_query"

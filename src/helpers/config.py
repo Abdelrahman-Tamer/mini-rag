@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     PRIMARY_LANG: str = "en"
     DEFAULT_LANG: str = "en"
 
+    SCORE_THRESHOLD: float = 0.4
+
+    RERANK_BACKEND: str = None
+    RERANK_MODEL_ID: str = None
+    CITY_MAPPINGS_PATH: str = "city_mappings.json"
+
     class Config:
         env_file = ".env"
 
