@@ -40,7 +40,7 @@ class ChunkModel(BaseDataModel):
 
         if result is None:
             return None
-        
+
         return DataChunk(**result)
 
     async def insert_many_chunks(self, chunks: list, batch_size: int=100):
@@ -54,31 +54,11 @@ class ChunkModel(BaseDataModel):
             ]
 
             await self.collection.bulk_write(operations)
-        
+
         return len(chunks)
 
-    async def delete_chunks_by_project_id(self, project_id: ObjectId):
-        result = await self.collection.delete_many({
-            "chunk_project_id": project_id
-        })
-
-        return result.deleted_count
-    
     async def delete_chunks_by_asset_id(self, asset_id):
         result = await self.collection.delete_many({
             "chunk_asset_id": ObjectId(asset_id) if isinstance(asset_id, str) else asset_id
         })
         return result.deleted_count
-
-    async def get_project_chunks(self, project_id: ObjectId, page_no: int=1, page_size: int=50):
-        records = await self.collection.find({
-                    "chunk_project_id": project_id
-                }).skip(
-                    (page_no-1) * page_size
-                ).limit(page_size).to_list(length=None)
-
-        return [
-            DataChunk(**record)
-            for record in records
-        ]
-

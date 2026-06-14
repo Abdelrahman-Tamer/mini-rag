@@ -28,35 +28,9 @@ class AssetModel(BaseDataModel):
                 )
 
     async def create_asset(self, asset: Asset):
-
         result = await self.collection.insert_one(asset.dict(by_alias=True, exclude_unset=True))
         asset.id = result.inserted_id
-
         return asset
-
-    async def get_all_project_assets(self, asset_project_id: str, asset_type: str):
-
-        records = await self.collection.find({
-            "asset_project_id": ObjectId(asset_project_id) if isinstance(asset_project_id, str) else asset_project_id,
-            "asset_type": asset_type,
-        }).to_list(length=None)
-
-        return [
-            Asset(**record)
-            for record in records
-        ]
-
-    async def get_asset_record(self, asset_project_id: str, asset_name: str):
-
-        record = await self.collection.find_one({
-            "asset_project_id": ObjectId(asset_project_id) if isinstance(asset_project_id, str) else asset_project_id,
-            "asset_name": asset_name,
-        })
-
-        if record:
-            return Asset(**record)
-        
-        return None
 
     async def get_uncategorized_assets(self):
         records = await self.collection.find({
@@ -92,11 +66,5 @@ class AssetModel(BaseDataModel):
     async def delete_asset_by_id(self, asset_id: str):
         result = await self.collection.delete_one({
             "_id": ObjectId(asset_id) if isinstance(asset_id, str) else asset_id
-        })
-        return result.deleted_count
-
-    async def delete_assets_by_project_id(self, project_id):
-        result = await self.collection.delete_many({
-            "asset_project_id": ObjectId(project_id) if isinstance(project_id, str) else project_id
         })
         return result.deleted_count

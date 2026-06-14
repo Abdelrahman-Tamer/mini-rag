@@ -42,7 +42,6 @@ class Settings(BaseSettings):
 
     RERANK_BACKEND: str = None
     RERANK_MODEL_ID: str = None
-    CITY_MAPPINGS_PATH: str = "city_mappings.json"
 
     class Config:
         env_file = ".env"

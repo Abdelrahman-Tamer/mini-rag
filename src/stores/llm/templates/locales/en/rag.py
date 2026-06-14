@@ -9,11 +9,9 @@ system_prompt = Template("\n".join([
     "",
     "RULES:",
     "1. Answer ONLY using information EXPLICITLY stated in the provided sources.",
-    "2. If the sources do not contain the answer, say: 'I don't have information about that.' Do NOT guess or make up information.",
-    "3. Cite the source number when presenting specific facts (prices, locations, hours).",
-    "4. If sources only partially answer, state only what is confirmed.",
-    "5. Respond in the same language as the user.",
-    "6. Keep answers clear, direct, and concise.",
+    "2. If the sources only partially answer, state what is confirmed and note what is missing. Don't fabricate facts or make up information not present in the sources.",
+    "3. Respond in the same language as the user.",
+    "4. Keep answers clear, direct, and concise.",
 ]))
 
 #### Document ####

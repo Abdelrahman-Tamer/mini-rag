@@ -1,16 +1,5 @@
 from .BaseController import BaseController
-from models.db_schemes import Project, DataChunk
 from stores.llm.LLMEnums import DocumentTypeEnum
-from typing import List, Optional
-import json
-import functools
-import os
-@functools.lru_cache(maxsize=1)
-def load_city_mappings(path: str = "city_mappings.json"):
-    if os.path.exists(path):
-        with open(path, encoding='utf-8') as f:
-            return json.load(f)
-    return {}
 
 
 class NLPController(BaseController):
@@ -41,112 +30,7 @@ class NLPController(BaseController):
         }
         return query_clean in greetings
 
-    def detect_city_from_query(self, query: str, known_cities: list) -> Optional[str]:
-        query_lower = query.lower()
-        matched_cities = [c for c in known_cities if c and c.lower() in query_lower]
-        if len(matched_cities) == 1:
-            return matched_cities[0]
-        if not matched_cities:
-            mappings = load_city_mappings(self.app_settings.CITY_MAPPINGS_PATH)
-            matched_countries = [c for c in mappings if c in query_lower]
-            if len(matched_countries) == 1:
-                return mappings[matched_countries[0]]
-        return None
-
-    def reset_vector_db_collection(self, project: Project):
-        return self.vectordb_client.delete_by_filter(
-            collection_name=self.collection_name,
-            filter={"project_id": project.project_id}
-        )
-
-    def get_vector_db_collection_info(self, project: Project):
-        collection_info = self.vectordb_client.get_collection_info(collection_name=self.collection_name)
-
-        return json.loads(
-            json.dumps(collection_info, default=lambda x: x.__dict__)
-        )
-
-    def index_into_vector_db(self, project: Project, chunks: List[DataChunk],
-                                chunks_ids: List[int],
-                                do_reset: bool = False):
-
-        if do_reset:
-            _ = self.reset_vector_db_collection(project=project)
-
-        texts = [c.chunk_text for c in chunks]
-        metadata = []
-        for c in chunks:
-            chunk_meta = dict(c.chunk_metadata) if c.chunk_metadata else {}
-            chunk_meta["project_id"] = project.project_id
-            metadata.append(chunk_meta)
-
-        vectors = [
-            self.embedding_client.embed_text(text=text,
-                                            document_type=DocumentTypeEnum.DOCUMENT.value)
-            for text in texts
-        ]
-
-        _ = self.vectordb_client.create_collection(
-            collection_name=self.collection_name,
-            embedding_size=self.embedding_client.embedding_size,
-            do_reset=False,
-        )
-
-        _ = self.vectordb_client.insert_many(
-            collection_name=self.collection_name,
-            texts=texts,
-            metadata=metadata,
-            vectors=vectors,
-            record_ids=chunks_ids,
-        )
-
-        return True
-
-    def answer_rag_question(self, project: Project, query: str, limit: int = 10):
-
-        answer, full_prompt, chat_history = None, None, None
-
-        retrieved_documents = self.search_vector_db_collection(
-            project=project,
-            text=query,
-            limit=limit,
-        )
-
-        if not retrieved_documents or len(retrieved_documents) == 0:
-            return answer, full_prompt, chat_history
-
-        system_prompt = self.template_parser.get("rag", "system_prompt")
-
-        documents_prompts = "\n".join([
-            self.template_parser.get("rag", "document_prompt", {
-                "doc_num": idx + 1,
-                "chunk_text": doc.text,
-                "score": round(doc.score, 3),
-            })
-            for idx, doc in enumerate(retrieved_documents)
-        ])
-
-        footer_prompt = self.template_parser.get("rag", "footer_prompt", {
-            "query": query
-        })
-
-        chat_history = [
-            self.generation_client.construct_prompt(
-                prompt=system_prompt,
-                role=self.generation_client.enums.SYSTEM.value,
-            )
-        ]
-
-        full_prompt = "\n\n".join([documents_prompts, footer_prompt])
-
-        answer = self.generation_client.generate_text(
-            prompt=full_prompt,
-            chat_history=chat_history
-        )
-
-        return answer, full_prompt, chat_history
-
-    def chat(self, query: str, limit: int = 5, city: str = None, doc_type: str = None):
+    def chat(self, query: str, limit: int = 5):
 
         if not query or not query.strip():
             return None
@@ -157,12 +41,6 @@ class NLPController(BaseController):
         if not vector or len(vector) == 0:
             return None
 
-        search_filter = {}
-        if city:
-            search_filter["city"] = city
-        if doc_type:
-            search_filter["doc_type"] = doc_type
-
         # retrieve more for reranking
         retrieve_limit = 20 if self.rerank_client else limit
 
@@ -170,7 +48,6 @@ class NLPController(BaseController):
             collection_name=self.collection_name,
             vector=vector,
             limit=retrieve_limit,
-            filter=search_filter if search_filter else None
         )
 
         if not results:
@@ -202,56 +79,6 @@ class NLPController(BaseController):
 
         if not results:
             return None
-
-        return results[:limit]
-
-    def search_vector_db_collection(self, project: Project, text: str, limit: int = 10):
-
-        vector = self.embedding_client.embed_text(text=text,
-                                                document_type=DocumentTypeEnum.QUERY.value)
-
-        if not vector or len(vector) == 0:
-            return False
-
-        # retrieve more for reranking
-        retrieve_limit = 20 if self.rerank_client else limit
-
-        results = self.vectordb_client.search_by_vector(
-            collection_name=self.collection_name,
-            vector=vector,
-            limit=retrieve_limit,
-            filter={"project_id": project.project_id}
-        )
-
-        if not results:
-            return False
-
-        # rerank if available
-        reranked_successfully = False
-        if self.rerank_client and len(results) > 1:
-            reranked = self.rerank_client.rerank(
-                query=text,
-                documents=[doc.text for doc in results],
-                top_k=limit,
-                model=self.rerank_model_id
-            )
-            if reranked:
-                reranked_successfully = True
-                reranked_docs = results
-                results = []
-                for idx, score in reranked:
-                    doc = reranked_docs[idx]
-                    doc.score = score
-                    results.append(doc)
-
-        # filter by score threshold
-        if reranked_successfully:
-            results = [doc for doc in results if doc.score >= 0.0]
-        else:
-            results = [doc for doc in results if doc.score >= self.score_threshold]
-
-        if not results:
-            return False
 
         return results[:limit]
 
@@ -342,11 +169,40 @@ class NLPController(BaseController):
 
         return questions[:5]
 
-    def delete_project_vectors(self, project_id: str):
-        return self.vectordb_client.delete_by_filter(
+    def index_chunks(self, chunks: list):
+        texts = [c.chunk_text for c in chunks]
+        metadata = [dict(c.chunk_metadata) if c.chunk_metadata else {} for c in chunks]
+
+        # get current point count and start IDs after it
+        try:
+            collection_info = self.vectordb_client.get_collection_info(
+                collection_name=self.collection_name
+            )
+            base_id = collection_info.points_count if hasattr(collection_info, 'points_count') else 0
+        except Exception:
+            base_id = 0
+
+        vectors = [
+            self.embedding_client.embed_text(text=text,
+                                            document_type=DocumentTypeEnum.DOCUMENT.value)
+            for text in texts
+        ]
+
+        _ = self.vectordb_client.create_collection(
             collection_name=self.collection_name,
-            filter={"project_id": project_id}
+            embedding_size=self.embedding_client.embedding_size,
+            do_reset=False,
         )
+
+        _ = self.vectordb_client.insert_many(
+            collection_name=self.collection_name,
+            texts=texts,
+            metadata=metadata,
+            vectors=vectors,
+            record_ids=list(range(base_id, base_id + len(chunks))),
+        )
+
+        return True
 
     def delete_file_vectors(self, asset_id: str):
         return self.vectordb_client.delete_by_filter(
