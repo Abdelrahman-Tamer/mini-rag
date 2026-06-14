@@ -31,13 +31,3 @@ footer_prompt = Template("\n".join([
     "## Answer:",
 ]))
 
-related_prompt = Template("\n".join([
-    "Based ONLY on the provided sources, suggest 3-5 follow-up questions the user might ask.",
-    "Only suggest questions the sources can actually answer. Return a simple numbered list — nothing else.",
-    "## Question:",
-    "$query",
-    "## Answer:",
-    "$answer",
-    "",
-    "## Suggested Questions:",
-]))

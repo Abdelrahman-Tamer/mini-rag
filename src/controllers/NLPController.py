@@ -144,31 +144,6 @@ class NLPController(BaseController):
 
         return answer, full_prompt, chat_history
 
-    def generate_related_questions(self, query: str, answer: str):
-
-        related_prompt = self.template_parser.get("rag", "related_prompt", {
-            "query": query,
-            "answer": answer
-        })
-
-        result = self.generation_client.generate_text(
-            prompt=related_prompt,
-            chat_history=[]
-        )
-
-        if not result:
-            return []
-
-        questions = []
-        for line in result.strip().split("\n"):
-            line = line.strip()
-            if line and (line[0].isdigit() or line.startswith("-") or line.startswith("*")):
-                clean = line.lstrip("0123456789.-*() ")
-                if clean:
-                    questions.append(clean)
-
-        return questions[:5]
-
     def index_chunks(self, chunks: list):
         texts = [c.chunk_text for c in chunks]
         metadata = [dict(c.chunk_metadata) if c.chunk_metadata else {} for c in chunks]

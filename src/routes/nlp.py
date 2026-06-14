@@ -60,7 +60,6 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
                 "message": answer or "Hello! How can I help you plan your trip?",
                 "answer": answer or "Hello! How can I help you plan your trip?",
                 "sources": [],
-                "related_questions": [],
             }
         )
 
@@ -89,7 +88,6 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
                 "message": answer or "I couldn't find any relevant information on that topic. Try asking about a different destination!",
                 "answer": answer or "I couldn't find any relevant information on that topic. Try asking about a different destination!",
                 "sources": [],
-                "related_questions": [],
             }
         )
 
@@ -118,17 +116,11 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
             }
         )
 
-    related_questions = nlp_controller.generate_related_questions(
-        query=chat_request.text,
-        answer=answer
-    )
-
     return JSONResponse(
         content={
             "signal": ResponseSignal.CHAT_SUCCESS.value,
             "message": "Here's what I found based on the available documents.",
             "answer": answer,
             "sources": sources,
-            "related_questions": related_questions,
         }
     )

@@ -1,0 +1,250 @@
+{
+  "info": {
+    "name": "Mini-RAG Tourism API",
+    "description": "Production-ready single-collection RAG chatbot for tourism",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "opencode"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "32.195.230.191:5000"
+    },
+    {
+      "key": "file_id",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{base_url}}/api/v1/",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", ""]
+        }
+      }
+    },
+    {
+      "name": "Chat",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"text\": \"What are the best hotels in Cairo?\",\n  \"limit\": 5,\n  \"history\": []\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/nlp/chat",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "nlp", "chat"]
+        }
+      }
+    },
+    {
+      "name": "Chat - Greeting",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"text\": \"hello\",\n  \"limit\": 5,\n  \"history\": []\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/nlp/chat",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "nlp", "chat"]
+        }
+      }
+    },
+    {
+      "name": "Chat - Arabic",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"text\": \"ما هي أفضل الفنادق في القاهرة؟\",\n  \"limit\": 5,\n  \"history\": []\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/nlp/chat",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "nlp", "chat"]
+        }
+      }
+    },
+    {
+      "name": "Chat - Empty Query",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"text\": \"\",\n  \"limit\": 5,\n  \"history\": []\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/nlp/chat",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "nlp", "chat"]
+        }
+      }
+    },
+    {
+      "name": "Chat - No Match Fallback",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"text\": \"What is the weather in Tokyo?\",\n  \"limit\": 5,\n  \"history\": []\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/nlp/chat",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "nlp", "chat"]
+        }
+      }
+    },
+    {
+      "name": "Upload File",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "src": []
+            },
+            {
+              "key": "city",
+              "value": "cairo",
+              "type": "text"
+            },
+            {
+              "key": "doc_type",
+              "value": "general",
+              "type": "text"
+            },
+            {
+              "key": "chunk_size",
+              "value": "500",
+              "type": "text"
+            },
+            {
+              "key": "overlap_size",
+              "value": "20",
+              "type": "text"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/data/upload",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "data", "upload"]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "var jsonData = pm.response.json();",
+              "if (jsonData.file_id) {",
+              "  pm.collectionVariables.set('file_id', jsonData.file_id);",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Upload Multiple Files",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "files",
+              "type": "file",
+              "src": []
+            },
+            {
+              "key": "files",
+              "type": "file",
+              "src": []
+            },
+            {
+              "key": "chunk_size",
+              "value": "500",
+              "type": "text"
+            },
+            {
+              "key": "overlap_size",
+              "value": "20",
+              "type": "text"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/data/upload-multi",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "data", "upload-multi"]
+        }
+      }
+    },
+    {
+      "name": "Delete File",
+      "request": {
+        "method": "DELETE",
+        "url": {
+          "raw": "{{base_url}}/api/v1/data/file/{{file_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "data", "file", "{{file_id}}"]
+        }
+      }
+    },
+    {
+      "name": "Get Cities",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{base_url}}/api/v1/data/cities",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "data", "cities"]
+        }
+      }
+    }
+  ]
+}
