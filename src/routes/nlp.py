@@ -23,8 +23,6 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
         generation_client=request.app.generation_client,
         embedding_client=request.app.embedding_client,
         template_parser=request.app.template_parser,
-        rerank_client=getattr(request.app, 'rerank_client', None),
-        rerank_model_id=getattr(request.app, 'rerank_model_id', None),
     )
 
     prior_history = chat_request.history or []

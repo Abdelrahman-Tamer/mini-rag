@@ -21,8 +21,6 @@ class Settings(BaseSettings):
 
     OPENAI_API_KEY: str = None
     OPENAI_API_URL: str = None
-    COHERE_API_KEY: str = None
-
     GENERATION_MODEL_ID: str = None
     EMBEDDING_MODEL_ID: str = None
     EMBEDDING_MODEL_SIZE: int = None
@@ -39,9 +37,6 @@ class Settings(BaseSettings):
     DEFAULT_LANG: str = "en"
 
     SCORE_THRESHOLD: float = 0.4
-
-    RERANK_BACKEND: str = None
-    RERANK_MODEL_ID: str = None
 
     class Config:
         env_file = ".env"

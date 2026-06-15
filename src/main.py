@@ -6,7 +6,6 @@ from helpers.config import get_settings
 from stores.llm.LLMProviderFactory import LLMProviderFactory
 from stores.vectordb.VectorDBProviderFactory import VectorDBProviderFactory
 from stores.llm.templates.template_parser import TemplateParser
-from stores.rerank.RerankProviderFactory import RerankProviderFactory
 
 app = FastAPI()
 
@@ -37,12 +36,6 @@ async def startup_span():
         language=settings.PRIMARY_LANG,
         default_language=settings.DEFAULT_LANG,
     )
-
-    # rerank client
-    rerank_provider_factory = RerankProviderFactory(settings)
-    app.rerank_client = rerank_provider_factory.create(provider=settings.RERANK_BACKEND)
-    app.rerank_model_id = settings.RERANK_MODEL_ID
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

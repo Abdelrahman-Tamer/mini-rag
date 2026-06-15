@@ -124,8 +124,6 @@ async def upload_multiple_files(
                     generation_client=request.app.generation_client,
                     embedding_client=request.app.embedding_client,
                     template_parser=request.app.template_parser,
-                    rerank_client=getattr(request.app, 'rerank_client', None),
-                    rerank_model_id=getattr(request.app, 'rerank_model_id', None),
                 )
                 nlp_controller.index_chunks(chunks=chunk_records)
 
@@ -254,8 +252,6 @@ async def update_file(
         generation_client=request.app.generation_client,
         embedding_client=request.app.embedding_client,
         template_parser=request.app.template_parser,
-        rerank_client=getattr(request.app, 'rerank_client', None),
-        rerank_model_id=getattr(request.app, 'rerank_model_id', None),
     )
     _ = nlp_controller.delete_file_vectors(asset_id=file_id)
 
@@ -308,8 +304,6 @@ async def delete_file(request: Request, file_id: str):
         generation_client=request.app.generation_client,
         embedding_client=request.app.embedding_client,
         template_parser=request.app.template_parser,
-        rerank_client=getattr(request.app, 'rerank_client', None),
-        rerank_model_id=getattr(request.app, 'rerank_model_id', None),
     )
 
     asset_model = await AssetModel.create_instance(

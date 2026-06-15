@@ -5,16 +5,13 @@ from stores.llm.LLMEnums import DocumentTypeEnum
 class NLPController(BaseController):
 
     def __init__(self, vectordb_client, generation_client,
-                embedding_client, template_parser,
-                rerank_client=None, rerank_model_id=None):
+                embedding_client, template_parser):
         super().__init__()
 
         self.vectordb_client = vectordb_client
         self.generation_client = generation_client
         self.embedding_client = embedding_client
         self.template_parser = template_parser
-        self.rerank_client = rerank_client
-        self.rerank_model_id = rerank_model_id
         self.collection_name = self.app_settings.VECTOR_DB_COLLECTION_NAME
         self.score_threshold = self.app_settings.SCORE_THRESHOLD
 
@@ -41,46 +38,21 @@ class NLPController(BaseController):
         if not vector or len(vector) == 0:
             return None
 
-        # retrieve more for reranking
-        retrieve_limit = 20 if self.rerank_client else limit
-
         results = self.vectordb_client.search_by_vector(
             collection_name=self.collection_name,
             vector=vector,
-            limit=retrieve_limit,
+            limit=limit,
         )
 
         if not results:
             return None
 
-        # rerank if available
-        reranked_successfully = False
-        if self.rerank_client and len(results) > 1:
-            reranked = self.rerank_client.rerank(
-                query=query,
-                documents=[doc.text for doc in results],
-                top_k=limit,
-                model=self.rerank_model_id
-            )
-            if reranked:
-                reranked_successfully = True
-                reranked_docs = results
-                results = []
-                for idx, score in reranked:
-                    doc = reranked_docs[idx]
-                    doc.score = score
-                    results.append(doc)
-
-        # filter by score threshold
-        if reranked_successfully:
-            results = [doc for doc in results if doc.score >= 0.0]
-        else:
-            results = [doc for doc in results if doc.score >= self.score_threshold]
+        results = [doc for doc in results if doc.score >= self.score_threshold]
 
         if not results:
             return None
 
-        return results[:limit]
+        return results
 
     def generate_chat_answer(self, query: str, retrieved_documents: list, prior_history: list = None, system_prompt: str = None):
 
