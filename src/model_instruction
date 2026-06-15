@@ -1,4 +1,0 @@
--open powershell
--type 'wsl'
--check if u are in the "mini-rag/src" directory
--run the server or edit what u will edit (following the plan strictly)

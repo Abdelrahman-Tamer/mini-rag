@@ -20,7 +20,7 @@ FastAPI (uvicorn, port 5000, EC2, systemd service)
 │   ├── BaseController.py      — files_dir path, random string generator
 │   ├── DataController.py      — validate file type/size, generate unique path
 │   ├── ProcessController.py   — load file (txt/pdf/csv/docx), chunk with RecursiveCharacterTextSplitter
-│   └── NLPController.py       — embed, retrieve, generate answer, index chunks, delete vectors
+│   └── NLPController.py       — rewrite queries, embed, retrieve, generate answer, index chunks, delete vectors
 ├── models/
 │   ├── AssetModel.py          — MongoDB: create, get, delete asset
 │   ├── ChunkModel.py          — MongoDB: create, insert_many, delete by asset_id
@@ -55,17 +55,18 @@ FastAPI (uvicorn, port 5000, EC2, systemd service)
 ## 3. Data Flow — Chat
 
 ```
-User → POST /chat({text: "best hotels in Cairo?"})
-  → NLPController.chat(query)
-    → embedding_client.embed_text(query, QUERY)        # OpenAI 1536-dim
-    → vectordb_client.search_by_vector(top_k=5)        # Qdrant cosine similarity
+User → POST /chat({text: "what about hotels?", history: [{role, content}, ...]})
+  → NLPController.chat(query, history)
+    → rewrite_query() — gpt-4o-mini rewrites "what about hotels?" → "hotels in Cairo"
+    → embedding_client.embed_text(rewritten_query, QUERY)  # OpenAI 1536-dim
+    → vectordb_client.search_by_vector(top_k=5)             # Qdrant cosine similarity
     → filter by score >= SCORE_THRESHOLD (0.2)
     → return RetrievedDocument[] with score, text, metadata
   → NLPController.generate_chat_answer(query, docs, history)
-    → template_parser.get("rag", "system_prompt")      # en/rag.py
-    → template_parser.get("rag", "document_prompt")    # format each doc
-    → template_parser.get("rag", "footer_prompt")      # format query
-    → generation_client.generate_text(prompt, history) # OpenAI gpt-4o-mini
+    → template_parser.get("rag", "system_prompt")           # en/rag.py
+    → template_parser.get("rag", "document_prompt")         # format each doc
+    → template_parser.get("rag", "footer_prompt")           # format query
+    → generation_client.generate_text(prompt, history)      # OpenAI gpt-4o-mini
     → return answer
   → response: {signal, message, answer, sources[{doc, city, score, excerpt}]}
 ```
@@ -134,8 +135,8 @@ POST /multi-upload(files[], chunk_size, overlap_size)
 ### LLM (`stores/llm/`)
 ```
 LLMInterface.py              — Abstract: set_generation_model, set_embedding_model, generate_text, embed_text, construct_prompt
-LLMEnums.py                  — LLMEnums(OPENAI, COHERE), OpenAIEnums(SYSTEM/USER/ASSISTANT), DocumentTypeEnum
-LLMProviderFactory.py        — create(provider) → OpenAIProvider or CoHereProvider
+LLMEnums.py                  — LLMEnums(OPENAI), OpenAIEnums(SYSTEM/USER/ASSISTANT), DocumentTypeEnum
+LLMProviderFactory.py        — create(provider) → OpenAIProvider
 providers/
   └── OpenAIProvider.py      — OpenAI client, generate_text, embed_text
 templates/
@@ -261,6 +262,7 @@ $chunk_text
 
 | Commit | Message |
 |--------|---------|
+| `cec0e27` | cleanup: remove reranking and CoHere unused providers |
 | `ee6ef99` | fix: use default_factory for asset_pushed_at to prevent bson encoding error |
 | `f6c53b3` | fix: asset_pushed_at timestamp on upload, add GET /files + PUT /file/{file_id}, rename to /multi-upload |
 | `0fa7167` | cleanup: remove dead code (schemas, methods, enums, related questions) + add Postman collection |
@@ -299,7 +301,7 @@ src/
 │   ├── BaseController.py         # Base: files_dir, generate_random_string
 │   ├── DataController.py         # validate_uploaded_file, generate_unique_filepath, get_clean_file_name
 │   ├── ProcessController.py      # get_file_loader, get_file_content, process_file_content
-│   └── NLPController.py          # chat, generate_chat_answer, index_chunks, delete_file_vectors, is_greeting_query
+│   └── NLPController.py          # chat, rewrite_query, generate_chat_answer, index_chunks, delete_file_vectors, is_greeting_query
 ├── models/
 │   ├── __init__.py               # Exports: ResponseSignal, ProcessingEnum
 │   ├── BaseDataModel.py          # Base: db_client, app_settings
@@ -362,6 +364,15 @@ Deleted `CoHereProvider.py` (97 lines) + all references.
 - `config.py` — `COHERE_API_KEY` field removed
 - `.env` — `COHERE_API_KEY=""` removed
 - `requirements.txt` — `cohere==5.5.8` removed
+
+### Query rewriting for conversation-aware retrieval (June 2026)
+Added conversation-aware retrieval via `rewrite_query()` in `NLPController.py`.
+- `NLPController.py` — added `rewrite_query()` method: uses gpt-4o-mini to rewrite
+  the latest user query into a standalone search query using conversation history
+- `NLPController.chat()` — now accepts `prior_history` param, calls rewrite before embed
+- `routes/nlp.py` — passes `prior_history` to `chat()`
+- Cost: ~80 tokens per rewrite (~$0.000015), +~200ms latency per turn
+- Prompt: "Given the conversation, rewrite the latest query as a standalone search..."
 
 ### Reranking removed (June 2026)
 Deleted entire `src/stores/rerank/` directory (7 files) and all references:

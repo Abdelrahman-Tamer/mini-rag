@@ -64,6 +64,7 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
     results = nlp_controller.chat(
         query=chat_request.text,
         limit=chat_request.limit,
+        prior_history=prior_history,
     )
 
     if not results:

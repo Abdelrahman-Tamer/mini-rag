@@ -15,6 +15,34 @@ class NLPController(BaseController):
         self.collection_name = self.app_settings.VECTOR_DB_COLLECTION_NAME
         self.score_threshold = self.app_settings.SCORE_THRESHOLD
 
+    def rewrite_query(self, query: str, history: list) -> str:
+        if not history:
+            return query
+
+        context_lines = []
+        for msg in history[-4:]:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            context_lines.append(f"{role}: {content}")
+        context = "\n".join(context_lines)
+
+        rewrite_prompt = (
+            "You are a search query rewriter. Given the conversation history "
+            "and the latest user query, rewrite the latest query as a standalone, "
+            "detailed search query. Return ONLY the rewritten query, nothing else.\n\n"
+            f"Conversation:\n{context}\n\n"
+            f"Latest query: {query}\n\n"
+            f"Standalone query:"
+        )
+
+        rewritten = self.generation_client.generate_text(
+            prompt=rewrite_prompt,
+            max_output_tokens=100,
+            temperature=0.0,
+        )
+
+        return (rewritten or query).strip().strip('"')
+
     def is_greeting_query(self, query: str) -> bool:
         query_clean = query.strip().lower().rstrip("?!.,;:")
         greetings = {
@@ -27,12 +55,13 @@ class NLPController(BaseController):
         }
         return query_clean in greetings
 
-    def chat(self, query: str, limit: int = 5):
+    def chat(self, query: str, limit: int = 5, prior_history: list = None):
 
         if not query or not query.strip():
             return None
 
-        vector = self.embedding_client.embed_text(text=query,
+        search_query = self.rewrite_query(query, prior_history)
+        vector = self.embedding_client.embed_text(text=search_query,
                                                 document_type=DocumentTypeEnum.QUERY.value)
 
         if not vector or len(vector) == 0:
