@@ -133,61 +133,6 @@
       }
     },
     {
-      "name": "Upload File",
-      "request": {
-        "method": "POST",
-        "header": [],
-        "body": {
-          "mode": "formdata",
-          "formdata": [
-            {
-              "key": "file",
-              "type": "file",
-              "src": []
-            },
-            {
-              "key": "city",
-              "value": "cairo",
-              "type": "text"
-            },
-            {
-              "key": "doc_type",
-              "value": "general",
-              "type": "text"
-            },
-            {
-              "key": "chunk_size",
-              "value": "500",
-              "type": "text"
-            },
-            {
-              "key": "overlap_size",
-              "value": "20",
-              "type": "text"
-            }
-          ]
-        },
-        "url": {
-          "raw": "{{base_url}}/api/v1/data/upload",
-          "host": ["{{base_url}}"],
-          "path": ["api", "v1", "data", "upload"]
-        }
-      },
-      "event": [
-        {
-          "listen": "test",
-          "script": {
-            "exec": [
-              "var jsonData = pm.response.json();",
-              "if (jsonData.file_id) {",
-              "  pm.collectionVariables.set('file_id', jsonData.file_id);",
-              "}"
-            ]
-          }
-        }
-      ]
-    },
-    {
       "name": "Upload Multiple Files",
       "request": {
         "method": "POST",
@@ -218,9 +163,52 @@
           ]
         },
         "url": {
-          "raw": "{{base_url}}/api/v1/data/upload-multi",
+          "raw": "{{base_url}}/api/v1/data/multi-upload",
           "host": ["{{base_url}}"],
-          "path": ["api", "v1", "data", "upload-multi"]
+          "path": ["api", "v1", "data", "multi-upload"]
+        }
+      }
+    },
+    {
+      "name": "List Files",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{base_url}}/api/v1/data/files",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "data", "files"]
+        }
+      }
+    },
+    {
+      "name": "Update File",
+      "request": {
+        "method": "PUT",
+        "header": [],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "file",
+              "type": "file",
+              "src": []
+            },
+            {
+              "key": "chunk_size",
+              "value": "500",
+              "type": "text"
+            },
+            {
+              "key": "overlap_size",
+              "value": "20",
+              "type": "text"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/data/file/{{file_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "data", "file", "{{file_id}}"]
         }
       }
     },
@@ -232,17 +220,6 @@
           "raw": "{{base_url}}/api/v1/data/file/{{file_id}}",
           "host": ["{{base_url}}"],
           "path": ["api", "v1", "data", "file", "{{file_id}}"]
-        }
-      }
-    },
-    {
-      "name": "Get Cities",
-      "request": {
-        "method": "GET",
-        "url": {
-          "raw": "{{base_url}}/api/v1/data/cities",
-          "host": ["{{base_url}}"],
-          "path": ["api", "v1", "data", "cities"]
         }
       }
     }

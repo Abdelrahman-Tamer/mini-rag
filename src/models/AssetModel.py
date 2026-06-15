@@ -28,9 +28,15 @@ class AssetModel(BaseDataModel):
                 )
 
     async def create_asset(self, asset: Asset):
-        result = await self.collection.insert_one(asset.dict(by_alias=True, exclude_unset=True))
+        result = await self.collection.insert_one(asset.dict(by_alias=True, exclude_none=True))
         asset.id = result.inserted_id
         return asset
+
+    async def get_asset_by_id(self, asset_id: str):
+        record = await self.collection.find_one({
+            "_id": ObjectId(asset_id) if isinstance(asset_id, str) else asset_id
+        })
+        return Asset(**record) if record else None
 
     async def delete_asset_by_id(self, asset_id: str):
         result = await self.collection.delete_one({
