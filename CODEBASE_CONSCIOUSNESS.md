@@ -15,7 +15,8 @@ FastAPI (uvicorn, port 5000, EC2, systemd service)
 │                    GET  /api/v1/data/files           → list all assets
 │                    PUT  /api/v1/data/file/{file_id}  → replace file + re-index
 │                    DELETE /api/v1/data/file/{file_id} → delete file + chunks + vectors
-│   └── nlp.py        POST /api/v1/nlp/chat           → chat with RAG
+│   └── nlp.py        POST /api/v1/nlp/conversation   → create new chat session
+│                    POST /api/v1/nlp/chat           → chat with RAG (requires conversation_id)
 ├── controllers/
 │   ├── BaseController.py      — files_dir path, random string generator
 │   ├── DataController.py      — validate file type/size, generate unique path
@@ -44,7 +45,8 @@ FastAPI (uvicorn, port 5000, EC2, systemd service)
 | Method | Path | Purpose | Body/Params |
 |--------|------|---------|-------------|
 | GET | `/api/v1/` | Health check | — |
-| POST | `/api/v1/nlp/chat` | Chat | `{text, limit=5, history=[{role, content}]}` |
+| POST | `/api/v1/nlp/conversation` | Create chat session | — |
+| POST | `/api/v1/nlp/chat` | Chat | `{text, limit=5, conversation_id}` |
 | POST | `/api/v1/data/multi-upload` | Batch upload | `files: UploadFile[], chunk_size=500, overlap_size=20` |
 | GET | `/api/v1/data/files` | List assets | — |
 | PUT | `/api/v1/data/file/{file_id}` | Replace file | `file: UploadFile, chunk_size=500, overlap_size=20` |
@@ -55,20 +57,27 @@ FastAPI (uvicorn, port 5000, EC2, systemd service)
 ## 3. Data Flow — Chat
 
 ```
-User → POST /chat({text: "what about hotels?", history: [{role, content}, ...]})
-  → NLPController.chat(query, history)
-    → rewrite_query() — gpt-4o-mini rewrites "what about hotels?" → "hotels in Cairo"
-    → embedding_client.embed_text(rewritten_query, QUERY)  # OpenAI 1536-dim
-    → vectordb_client.search_by_vector(top_k=5)             # Qdrant cosine similarity
-    → filter by score >= SCORE_THRESHOLD (0.2)
-    → return RetrievedDocument[] with score, text, metadata
-  → NLPController.generate_chat_answer(query, docs, history)
-    → template_parser.get("rag", "system_prompt")           # en/rag.py
-    → template_parser.get("rag", "document_prompt")         # format each doc
-    → template_parser.get("rag", "footer_prompt")           # format query
-    → generation_client.generate_text(prompt, history)      # OpenAI gpt-4o-mini
-    → return answer
-  → response: {signal, message, answer, sources[{doc, city, score, excerpt}]}
+Angular → .NET → RAG
+
+1. POST /api/v1/nlp/conversation
+   → {"conversation_id": "a1b2c3..."}
+
+2. POST /api/v1/nlp/chat({text: "what about hotels?", conversation_id: "a1b2c3..."})
+   → load history from MongoDB `conversations` collection by conversation_id
+   → NLPController.chat(query, history)
+     → rewrite_query() — gpt-4o-mini rewrites "what about hotels?" → "hotels in Cairo"
+     → embedding_client.embed_text(rewritten_query, QUERY)  # OpenAI 1536-dim
+     → vectordb_client.search_by_vector(top_k=5)             # Qdrant cosine similarity
+     → filter by score >= SCORE_THRESHOLD (0.2)
+     → return RetrievedDocument[] with score, text, metadata
+   → NLPController.generate_chat_answer(query, docs, history)
+     → template_parser.get("rag", "system_prompt")           # en/rag.py
+     → template_parser.get("rag", "document_prompt")         # format each doc
+     → template_parser.get("rag", "footer_prompt")           # format query
+     → generation_client.generate_text(prompt, history)      # OpenAI gpt-4o-mini
+     → return answer
+   → append Q&A turn to MongoDB `conversations` collection
+   → response: {signal, message, answer, sources[{doc, city, score, excerpt}]}
 ```
 
 ## 4. Data Flow — Upload
@@ -307,20 +316,22 @@ src/
 │   ├── BaseDataModel.py          # Base: db_client, app_settings
 │   ├── AssetModel.py             # create, get_by_id, delete asset
 │   ├── ChunkModel.py             # create, insert_many, delete_by_asset_id
+│   ├── ConversationModel.py      # create, get, append_turn conversation in MongoDB
 │   ├── db_schemes/
 │   │   ├── asset.py              # Asset pydantic model
+│   │   ├── conversation.py       # Conversation pydantic model (history, timestamps)
 │   │   └── data_chunk.py         # DataChunk + RetrievedDocument pydantic models
 │   └── enums/
 │       ├── AssetTypeEnum.py      # FILE = "file"
-│       ├── DataBaseEnum.py       # COLLECTION_CHUNK_NAME, COLLECTION_ASSET_NAME
+│       ├── DataBaseEnum.py       # COLLECTION_CHUNK_NAME, COLLECTION_ASSET_NAME, COLLECTION_CONVERSATION_NAME
 │       ├── ProcessingEnum.py     # TXT, PDF, CSV, DOCX
 │       └── ResponseEnums.py      # FILE_*, CHAT_*, DELETE_*, MULTI_*, INVALID_QUERY
 ├── routes/
 │   ├── base.py                   # GET /api/v1/
 │   ├── data.py                   # POST /multi-upload, GET /files, PUT /file/{id}, DELETE /file/{id}
-│   ├── nlp.py                    # POST /chat
+│   ├── nlp.py                    # POST /conversation, POST /chat
 │   └── schemes/
-│       └── nlp.py                # ChatRequest pydantic model
+│       └── nlp.py                # ChatRequest pydantic model (text, limit, conversation_id)
 ├── stores/
 │   ├── llm/
 │   │   ├── LLMInterface.py       # Abstract base
@@ -364,6 +375,15 @@ Deleted `CoHereProvider.py` (97 lines) + all references.
 - `config.py` — `COHERE_API_KEY` field removed
 - `.env` — `COHERE_API_KEY=""` removed
 - `requirements.txt` — `cohere==5.5.8` removed
+
+### Conversation history in MongoDB (June 2026)
+Added persistent conversation history via MongoDB `conversations` collection.
+- New file `models/db_schemes/conversation.py` — `Conversation` schema with `history`, `created_at`, `updated_at`
+- New file `models/ConversationModel.py` — `create_conversation()`, `get_conversation()`, `append_turn()`
+- New endpoint `POST /api/v1/nlp/conversation` — creates a new conversation, returns `conversation_id`
+- Modified `POST /api/v1/nlp/chat` — `ChatRequest` replaces `history` with `conversation_id`. Loads history from MongoDB, appends Q&A turn after each response.
+- `DataBaseEnum` — added `COLLECTION_CONVERSATION_NAME = "conversations"`
+- `.NET/Angular` calls `/conversation` once per new chat, stores the id, then passes it with every `/chat` request.
 
 ### Query rewriting for conversation-aware retrieval (June 2026)
 Added conversation-aware retrieval via `rewrite_query()` in `NLPController.py`.
