@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "Mini-RAG Tourism API",
-    "description": "Production-ready single-collection RAG chatbot for tourism",
+    "description": "RAG chatbot for tourism with MongoDB conversation history",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
     "_exporter_id": "opencode"
   },
@@ -12,6 +12,10 @@
     },
     {
       "key": "file_id",
+      "value": ""
+    },
+    {
+      "key": "conversation_id",
       "value": ""
     }
   ],
@@ -28,7 +32,61 @@
       }
     },
     {
-      "name": "Chat",
+      "name": "Create Conversation",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "var jsonData = pm.response.json();",
+              "if (jsonData.conversation_id) {",
+              "  pm.collectionVariables.set(\"conversation_id\", jsonData.conversation_id);",
+              "  console.log(\"conversation_id set to: \" + jsonData.conversation_id);",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "url": {
+          "raw": "{{base_url}}/api/v1/nlp/conversation",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "nlp", "conversation"]
+        }
+      }
+    },
+    {
+      "name": "Get Conversation",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{base_url}}/api/v1/nlp/conversation/{{conversation_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "nlp", "conversation", "{{conversation_id}}"]
+        }
+      }
+    },
+    {
+      "name": "List Conversations",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{base_url}}/api/v1/nlp/conversations?ids=234821a310144b80a25e78633fdbf830,997c94007aa44a60bdc6d63b409189d3",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "nlp", "conversations"],
+          "query": [
+            {
+              "key": "ids",
+              "value": "234821a310144b80a25e78633fdbf830,997c94007aa44a60bdc6d63b409189d3"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Chat - First Message",
       "request": {
         "method": "POST",
         "header": [
@@ -39,7 +97,28 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"text\": \"What are the best hotels in Cairo?\",\n  \"limit\": 5,\n  \"history\": []\n}"
+          "raw": "{\n  \"text\": \"Tell me about Cairo\",\n  \"conversation_id\": \"{{conversation_id}}\",\n  \"limit\": 5\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/v1/nlp/chat",
+          "host": ["{{base_url}}"],
+          "path": ["api", "v1", "nlp", "chat"]
+        }
+      }
+    },
+    {
+      "name": "Chat - Follow-up (context-aware)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"text\": \"What about hotels there?\",\n  \"conversation_id\": \"{{conversation_id}}\",\n  \"limit\": 5\n}"
         },
         "url": {
           "raw": "{{base_url}}/api/v1/nlp/chat",
@@ -60,7 +139,7 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"text\": \"hello\",\n  \"limit\": 5,\n  \"history\": []\n}"
+          "raw": "{\n  \"text\": \"hello\",\n  \"conversation_id\": \"{{conversation_id}}\",\n  \"limit\": 5\n}"
         },
         "url": {
           "raw": "{{base_url}}/api/v1/nlp/chat",
@@ -81,7 +160,7 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"text\": \"ما هي أفضل الفنادق في القاهرة؟\",\n  \"limit\": 5,\n  \"history\": []\n}"
+          "raw": "{\n  \"text\": \"ما هي أفضل الفنادق في القاهرة؟\",\n  \"conversation_id\": \"{{conversation_id}}\",\n  \"limit\": 5\n}"
         },
         "url": {
           "raw": "{{base_url}}/api/v1/nlp/chat",
@@ -102,7 +181,7 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"text\": \"\",\n  \"limit\": 5,\n  \"history\": []\n}"
+          "raw": "{\n  \"text\": \"\",\n  \"conversation_id\": \"{{conversation_id}}\",\n  \"limit\": 5\n}"
         },
         "url": {
           "raw": "{{base_url}}/api/v1/nlp/chat",
@@ -123,7 +202,7 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"text\": \"What is the weather in Tokyo?\",\n  \"limit\": 5,\n  \"history\": []\n}"
+          "raw": "{\n  \"text\": \"What is the weather in Tokyo?\",\n  \"conversation_id\": \"{{conversation_id}}\",\n  \"limit\": 5\n}"
         },
         "url": {
           "raw": "{{base_url}}/api/v1/nlp/chat",
