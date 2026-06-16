@@ -13,6 +13,7 @@ from models.db_schemes import DataChunk, Asset
 from models.enums.AssetTypeEnum import AssetTypeEnum
 from typing import Optional
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from bson import ObjectId
 
 logger = logging.getLogger('uvicorn.error')
@@ -237,7 +238,7 @@ async def update_file(
         {"_id": ObjectId(file_id) if isinstance(file_id, str) else file_id},
         {"$set": {
             "asset_size": os.path.getsize(new_file_path),
-            "asset_pushed_at": datetime.utcnow(),
+            "asset_pushed_at": datetime.now(ZoneInfo("Africa/Cairo")),
         }}
     )
 
