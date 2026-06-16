@@ -31,7 +31,7 @@ class ConversationModel(BaseDataModel):
 
     async def create_conversation(self):
         conv_id = uuid.uuid4().hex
-        record = Conversation(id=conv_id)
+        record = Conversation(**{"_id": conv_id})
         await self.collection.insert_one(record.dict(by_alias=True))
         return record
 
