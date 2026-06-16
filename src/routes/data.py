@@ -167,7 +167,7 @@ async def list_files(request: Request):
             "file_id": str(r["_id"]),
             "asset_name": r.get("asset_name"),
             "file_size": r.get("asset_size"),
-            "uploaded_at": r.get("asset_pushed_at").isoformat() if r.get("asset_pushed_at") else None,
+            "uploaded_at": r.get("asset_pushed_at").replace(tzinfo=ZoneInfo("UTC")).astimezone(ZoneInfo("Africa/Cairo")).isoformat() if r.get("asset_pushed_at") else None,
         }
         for r in records
     ]

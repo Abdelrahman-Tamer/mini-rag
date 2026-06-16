@@ -2,6 +2,8 @@ from .BaseController import BaseController
 from stores.llm.LLMEnums import DocumentTypeEnum
 
 
+MAX_HISTORY_TURNS = 5
+
 class NLPController(BaseController):
 
     def __init__(self, vectordb_client, generation_client,
@@ -20,7 +22,7 @@ class NLPController(BaseController):
             return query
 
         context_lines = []
-        for msg in history[-4:]:
+        for msg in history[-MAX_HISTORY_TURNS*2:]:
             role = msg.get("role", "user")
             content = msg.get("content", "")
             context_lines.append(f"{role}: {content}")
@@ -119,7 +121,7 @@ class NLPController(BaseController):
         ]
 
         if prior_history:
-            for msg in prior_history[-6:]:
+            for msg in prior_history[-MAX_HISTORY_TURNS*2:]:
                 role_value = msg.get("role", "user")
                 if role_value == "assistant":
                     mapped_role = self.generation_client.enums.ASSISTANT.value

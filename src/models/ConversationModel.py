@@ -41,21 +41,25 @@ class ConversationModel(BaseDataModel):
 
     async def append_turn(self, conversation_id: str, user_msg: str, assistant_msg: str):
         now = datetime.now(ZoneInfo("Africa/Cairo"))
-        update = {
-            "$push": {
-                "history": {
-                    "$each": [
-                        {"role": "user", "content": user_msg},
-                        {"role": "assistant", "content": assistant_msg},
-                    ]
-                }
-            },
-            "$set": {"updated_at": now},
-            "$setOnInsert": {"title": user_msg[:100]},
-        }
+
+        await self.collection.update_one(
+            {"_id": conversation_id, "title": {"$in": ["", None]}},
+            {"$set": {"title": user_msg[:100]}},
+        )
+
         await self.collection.update_one(
             {"_id": conversation_id},
-            update,
+            {
+                "$push": {
+                    "history": {
+                        "$each": [
+                            {"role": "user", "content": user_msg},
+                            {"role": "assistant", "content": assistant_msg},
+                        ]
+                    }
+                },
+                "$set": {"updated_at": now},
+            }
         )
 
     async def list_conversations(self, ids: list[str]):
@@ -68,7 +72,7 @@ class ConversationModel(BaseDataModel):
             {
                 "conversation_id": r["_id"],
                 "title": r.get("title", ""),
-                "updated_at": r.get("updated_at").isoformat() if r.get("updated_at") else None,
+                "updated_at": r.get("updated_at").replace(tzinfo=ZoneInfo("UTC")).astimezone(ZoneInfo("Africa/Cairo")).isoformat() if r.get("updated_at") else None,
             }
             for r in results
         ]

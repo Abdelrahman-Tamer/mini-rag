@@ -4,6 +4,7 @@ from routes.schemes.nlp import ChatRequest
 from controllers import NLPController
 from models import ResponseSignal, ConversationModel
 import os
+from zoneinfo import ZoneInfo
 
 import logging
 
@@ -38,8 +39,8 @@ async def get_conversation(request: Request, conversation_id: str):
     return {
         "conversation_id": conv.id,
         "history": conv.history,
-        "created_at": conv.created_at.isoformat() if conv.created_at else None,
-        "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
+        "created_at": conv.created_at.replace(tzinfo=ZoneInfo("UTC")).astimezone(ZoneInfo("Africa/Cairo")).isoformat() if conv.created_at else None,
+        "updated_at": conv.updated_at.replace(tzinfo=ZoneInfo("UTC")).astimezone(ZoneInfo("Africa/Cairo")).isoformat() if conv.updated_at else None,
     }
 
 
