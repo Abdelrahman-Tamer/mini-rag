@@ -2,7 +2,7 @@ from fastapi import FastAPI, APIRouter, status, Request
 from fastapi.responses import JSONResponse
 from routes.schemes.nlp import ChatRequest
 from controllers import NLPController
-from models import ResponseSignal
+from models import ResponseSignal, ConversationModel
 import os
 
 import logging
@@ -15,6 +15,15 @@ nlp_router = APIRouter(
 )
 
 
+@nlp_router.post("/conversation")
+async def create_conversation(request: Request):
+    conversation_model = await ConversationModel.create_instance(
+        db_client=request.app.db_client
+    )
+    conv = await conversation_model.create_conversation()
+    return JSONResponse(content={"conversation_id": conv.id})
+
+
 @nlp_router.post("/chat")
 async def chat_endpoint(request: Request, chat_request: ChatRequest):
 
@@ -24,8 +33,6 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
         embedding_client=request.app.embedding_client,
         template_parser=request.app.template_parser,
     )
-
-    prior_history = chat_request.history or []
 
     # validate non-empty query
     text = chat_request.text.strip() if chat_request.text else ""
@@ -38,8 +45,19 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
             }
         )
 
+    # load history from MongoDB by conversation_id
+    prior_history = []
+    conversation_model = None
+    if chat_request.conversation_id:
+        conversation_model = await ConversationModel.create_instance(
+            db_client=request.app.db_client
+        )
+        conv = await conversation_model.get_conversation(chat_request.conversation_id)
+        if conv:
+            prior_history = conv.history
+
     # handle greetings: skip retrieval, respond naturally
-    if nlp_controller.is_greeting_query(chat_request.text):
+    if nlp_controller.is_greeting_query(text):
         greeting_system = (
             "You are a friendly travel assistant. "
             "The user just greeted you. Respond warmly in the same language as them. "
@@ -47,22 +65,29 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
             "Keep it short and welcoming."
         )
         answer, full_prompt, _ = nlp_controller.generate_chat_answer(
-            query=chat_request.text,
+            query=text,
             retrieved_documents=[],
             prior_history=prior_history,
             system_prompt=greeting_system,
         )
+        answer = answer or "Hello! How can I help you plan your trip?"
+        if conversation_model and chat_request.conversation_id:
+            await conversation_model.append_turn(
+                conversation_id=chat_request.conversation_id,
+                user_msg=text,
+                assistant_msg=answer,
+            )
         return JSONResponse(
             content={
                 "signal": ResponseSignal.CHAT_SUCCESS.value,
-                "message": answer or "Hello! How can I help you plan your trip?",
-                "answer": answer or "Hello! How can I help you plan your trip?",
+                "message": answer,
+                "answer": answer,
                 "sources": [],
             }
         )
 
     results = nlp_controller.chat(
-        query=chat_request.text,
+        query=text,
         limit=chat_request.limit,
         prior_history=prior_history,
     )
@@ -76,16 +101,23 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
             "Respond in the same language as the user. Keep it brief and helpful."
         )
         answer, full_prompt, _ = nlp_controller.generate_chat_answer(
-            query=chat_request.text,
+            query=text,
             retrieved_documents=[],
             prior_history=prior_history,
             system_prompt=fallback_prompt,
         )
+        answer = answer or "I couldn't find any relevant information on that topic. Try asking about a different destination!"
+        if conversation_model and chat_request.conversation_id:
+            await conversation_model.append_turn(
+                conversation_id=chat_request.conversation_id,
+                user_msg=text,
+                assistant_msg=answer,
+            )
         return JSONResponse(
             content={
                 "signal": ResponseSignal.CHAT_SUCCESS.value,
-                "message": answer or "I couldn't find any relevant information on that topic. Try asking about a different destination!",
-                "answer": answer or "I couldn't find any relevant information on that topic. Try asking about a different destination!",
+                "message": answer,
+                "answer": answer,
                 "sources": [],
             }
         )
@@ -102,7 +134,7 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
     ]
 
     answer, full_prompt, _ = nlp_controller.generate_chat_answer(
-        query=chat_request.text,
+        query=text,
         retrieved_documents=results,
         prior_history=prior_history
     )
@@ -113,6 +145,13 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
                 "signal": ResponseSignal.CHAT_ERROR.value,
                 "message": "I encountered an error while generating a response. Please try again.",
             }
+        )
+
+    if conversation_model and chat_request.conversation_id:
+        await conversation_model.append_turn(
+            conversation_id=chat_request.conversation_id,
+            user_msg=text,
+            assistant_msg=answer,
         )
 
     return JSONResponse(
