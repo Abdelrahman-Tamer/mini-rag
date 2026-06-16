@@ -5,6 +5,7 @@ from zoneinfo import ZoneInfo
 
 class Conversation(BaseModel):
     id: Optional[str] = Field(None, alias="_id")
+    title: str = ""
     history: List[dict] = Field(default=[])
     created_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("Africa/Cairo")))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("Africa/Cairo")))

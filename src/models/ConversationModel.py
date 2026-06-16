@@ -41,17 +41,34 @@ class ConversationModel(BaseDataModel):
 
     async def append_turn(self, conversation_id: str, user_msg: str, assistant_msg: str):
         now = datetime.now(ZoneInfo("Africa/Cairo"))
+        update = {
+            "$push": {
+                "history": {
+                    "$each": [
+                        {"role": "user", "content": user_msg},
+                        {"role": "assistant", "content": assistant_msg},
+                    ]
+                }
+            },
+            "$set": {"updated_at": now},
+            "$setOnInsert": {"title": user_msg[:100]},
+        }
         await self.collection.update_one(
             {"_id": conversation_id},
-            {
-                "$push": {
-                    "history": {
-                        "$each": [
-                            {"role": "user", "content": user_msg},
-                            {"role": "assistant", "content": assistant_msg},
-                        ]
-                    }
-                },
-                "$set": {"updated_at": now},
-            }
+            update,
         )
+
+    async def list_conversations(self, ids: list[str]):
+        cursor = self.collection.find(
+            {"_id": {"$in": ids}},
+            {"_id": 1, "title": 1, "updated_at": 1},
+        ).sort("updated_at", -1)
+        results = await cursor.to_list(length=None)
+        return [
+            {
+                "conversation_id": r["_id"],
+                "title": r.get("title", ""),
+                "updated_at": r.get("updated_at").isoformat() if r.get("updated_at") else None,
+            }
+            for r in results
+        ]

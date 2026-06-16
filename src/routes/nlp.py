@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, status, Request
+from fastapi import FastAPI, APIRouter, status, Request, Query
 from fastapi.responses import JSONResponse
 from routes.schemes.nlp import ChatRequest
 from controllers import NLPController
@@ -41,6 +41,18 @@ async def get_conversation(request: Request, conversation_id: str):
         "created_at": conv.created_at.isoformat() if conv.created_at else None,
         "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
     }
+
+
+@nlp_router.get("/conversations")
+async def list_conversations(request: Request, ids: str = Query("")):
+    if not ids:
+        return {"conversations": []}
+    conversation_model = await ConversationModel.create_instance(
+        db_client=request.app.db_client
+    )
+    id_list = [i.strip() for i in ids.split(",") if i.strip()]
+    conversations = await conversation_model.list_conversations(id_list)
+    return {"conversations": conversations}
 
 
 @nlp_router.post("/chat")
