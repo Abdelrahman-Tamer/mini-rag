@@ -24,6 +24,25 @@ async def create_conversation(request: Request):
     return JSONResponse(content={"conversation_id": conv.id})
 
 
+@nlp_router.get("/conversation/{conversation_id}")
+async def get_conversation(request: Request, conversation_id: str):
+    conversation_model = await ConversationModel.create_instance(
+        db_client=request.app.db_client
+    )
+    conv = await conversation_model.get_conversation(conversation_id)
+    if not conv:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"signal": "conversation_not_found"}
+        )
+    return {
+        "conversation_id": conv.id,
+        "history": conv.history,
+        "created_at": conv.created_at.isoformat() if conv.created_at else None,
+        "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
+    }
+
+
 @nlp_router.post("/chat")
 async def chat_endpoint(request: Request, chat_request: ChatRequest):
 
