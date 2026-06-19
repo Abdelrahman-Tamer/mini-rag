@@ -194,10 +194,10 @@ POST /api/v1/nlp/chat
   "sources": [
     {
       "document_name": "luxor_hotels_guide.pdf",
-      "city": "luxor",
-      "doc_type": "hotels",
+      "city": "unknown",
+      "doc_type": "general",
       "score": 0.8921,
-      "excerpt": "The Sofitel Winter Palace Luxor is a historic hotel..."
+      "excerpt": "Sofitel Winter Palace Luxor is a 5-star hotel..."
     }
   ]
 }
