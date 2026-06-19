@@ -1,6 +1,22 @@
 # Changelog
 
-## [0.1.0] - 2026-06-07
+## [0.2.0] — 2026-06-19
+
+### Added
+- **ARCHITECTURE.md** — comprehensive reference covering every file, endpoint, function, and their purpose (800+ lines)
+- **README.md badges** — 8 shields for Python, FastAPI, OpenAI, Qdrant, MongoDB, Angular, .NET, License
+- **.env.example** — template with placeholder values for public repo
+
+### Changed
+- **README.md** — completely rewritten with badges, emojis, clean tables, full API reference
+- **Auto-title fix** — `$setOnInsert` → conditional `$set`; first user message now correctly populates the conversation title (was always empty before)
+- **Timezone fix** — all timestamp serializations (`list_conversations`, `get_conversation`, `list_files`) now convert naive UTC → `Africa/Cairo` before `.isoformat()`
+- **History truncation** — `rewrite_query()` and `generate_chat_answer()` now consistently use `MAX_HISTORY_TURNS = 5` (was ad-hoc 4/6 split)
+
+### Fixed
+- **Empty conversation titles** — `ConversationModel.append_turn()` now sets title via conditional `$set`, not `$setOnInsert` (which never fired since the doc already existed)
+
+## [0.1.0] — 2026-06-07
 
 ### Added
 - **Global RAG chat** — `POST /api/v1/nlp/chat` searches a single Qdrant collection, no `project_id` required

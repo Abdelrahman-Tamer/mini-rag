@@ -237,7 +237,7 @@ providers/
 | Temperature | 0.1 | Good for factual consistency. |
 | Max tokens | 500 | Reasonable for concise answers. |
 | Document budget | 4096 chars | Character-based (not token-based). |
-| History window | last 6 messages | Reasonable. |
+| History window | last 5 turns (10 messages) | Consistent MAX_HISTORY_TURNS. |
 | Embedding model | text-embedding-3-small | 1536 dim, $0.13/M tokens. Good. |
 | Generation model | gpt-4o-mini | $0.15/M in, $0.60/M out. Good. |
 
@@ -271,6 +271,10 @@ $chunk_text
 
 | Commit | Message |
 |--------|---------|
+| `8af498c` | add ARCHITECTURE.md, rewrite README.md with badges and structured docs |
+| `2bbedbb` | rewrite README for public GitHub repo |
+| `1d15c70` | add .env.example with placeholder values |
+| `6e469c1` | fix: auto-title from first message, Cairo timezone on reads, truncate history to 5 turns |
 | `cec0e27` | cleanup: remove reranking and CoHere unused providers |
 | `ee6ef99` | fix: use default_factory for asset_pushed_at to prevent bson encoding error |
 | `f6c53b3` | fix: asset_pushed_at timestamp on upload, add GET /files + PUT /file/{file_id}, rename to /multi-upload |
@@ -404,3 +408,13 @@ Deleted entire `src/stores/rerank/` directory (7 files) and all references:
 - `helpers/config.py` — `RERANK_BACKEND` + `RERANK_MODEL_ID` fields removed
 - `.env` — `RERANK_BACKEND=` + `RERANK_MODEL_ID=BAAI/bge-reranker-v2-m3` removed
 - `requirements.txt` — `sentence-transformers==3.4.1` removed
+
+### Auto-title + timezone + history truncation (June 2026)
+- **Empty title fix** — `ConversationModel.py`: replaced `$setOnInsert` (which never fired) with conditional `$set` when title is `""`. First user message now correctly populates `title`.
+- **Timezone fix** — `ConversationModel.py:71`, `routes/nlp.py:41-42`, `routes/data.py:170`: all timestamps now convert naive UTC → `Africa/Cairo` before `.isoformat()` with `+02:00` offset.
+- **History truncation** — `NLPController.py`: added `MAX_HISTORY_TURNS = 5`, used consistently in `rewrite_query()` and `generate_chat_answer()` (was ad-hoc 4/6 split).
+
+### ARCHITECTURE.md + README rewrite (June 2026)
+- Created `ARCHITECTURE.md` — 800+ line comprehensive reference covering every file, endpoint, function with purpose and reasoning.
+- Rewrote `README.md` with 8 shields/badges, emoji sections, clean API tables.
+- Added `.env.example` with placeholder values.

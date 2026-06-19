@@ -1,5 +1,9 @@
 # Mini RAG — Full Documentation
 
+> ⚠️ **DEPRECATED** — This document is outdated. See [**ARCHITECTURE.md**](ARCHITECTURE.md) for the complete, up-to-date reference covering every file, endpoint, function, and their purpose.
+>
+> Only the [Prompt Templates](#11-prompt-templates) section below remains accurate.
+
 > Multi-provider, multi-city RAG chatbot for tourism. Users ask questions about cities, attractions, restaurants, hotels, and shopping — the system retrieves relevant document chunks and generates answers grounded in uploaded content.
 
 ---
