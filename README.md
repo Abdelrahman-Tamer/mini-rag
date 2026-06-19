@@ -38,36 +38,36 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                       Angular Frontend                           │
-│          Chat UI + Conversation Sidebar + File Manager           │
+│                       Angular Frontend                          │
+│          Chat UI + Conversation Sidebar + File Manager          │
 └────────────────────────────┬────────────────────────────────────┘
                              │ HTTP
 ┌────────────────────────────▼────────────────────────────────────┐
-│                         .NET API                                 │
-│          Authentication · User → Conversation Mapping            │
+│                         .NET API                                │
+│          Authentication · User → Conversation Mapping           │
 └────────────────────────────┬────────────────────────────────────┘
                              │ HTTP
 ┌────────────────────────────▼────────────────────────────────────┐
-│                      FastAPI RAG Server                          │
-│                                                                  │
+│                      FastAPI RAG Server                         │
+│                                                                 │
 │  ┌──────────────────────┐   ┌────────────────────────────────┐  │
-│  │      Routes          │   │         Controllers             │  │
-│  │  · Health (/)        │   │  · DataController — validation  │  │
-│  │  · Data (/data)      │   │  · ProcessController — chunking │  │
-│  │  · Chat (/nlp)       │   │  · NLPController — RAG engine   │  │
+│  │      Routes          │   │         Controllers            │  │
+│  │  · Health (/)        │   │  · DataController — validation │  │
+│  │  · Data (/data)      │   │  · ProcessController — chunking│  │
+│  │  · Chat (/nlp)       │   │  · NLPController — RAG engine  │  │
 │  └──────────────────────┘   └────────────────────────────────┘  │
-│                                                                  │
+│                                                                 │
 │  ┌──────────────────────┐   ┌────────────────────────────────┐  │
-│  │       Models         │   │          Stores                 │  │
+│  │       Models         │   │          Stores                │  │
 │  │  · AssetModel        │   │  · OpenAIProvider (gpt-4o-mini)│  │
 │  │  · ChunkModel        │   │  · OpenAIProvider (embeddings) │  │
 │  │  · ConversationModel │   │  · QdrantDBProvider            │  │
 │  └──────────────────────┘   └────────────────────────────────┘  │
-│                                                                  │
-│  ┌──────────────┐  ┌────────────────┐  ┌────────────────────┐  │
-│  │   MongoDB    │  │   Qdrant Cloud │  │   OpenAI API       │  │
-│  │   Atlas      │  │   vectors      │  │   generation + emb │  │
-│  └──────────────┘  └────────────────┘  └────────────────────┘  │
+│                                                                 │
+│  ┌──────────────┐  ┌────────────────┐  ┌────────────────────┐   │
+│  │   MongoDB    │  │   Qdrant Cloud │  │   OpenAI API       │   │
+│  │   Atlas      │  │   vectors      │  │   generation + emb │   │
+│  └──────────────┘  └────────────────┘  └────────────────────┘   │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
