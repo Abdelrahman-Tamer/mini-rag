@@ -42,41 +42,41 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        Angular Frontend                          │
-│  (Chat UI — renders bubbles, manages conversation sidebar)       │
+│                        Angular Frontend                         │
+│  (Chat UI — renders bubbles, manages conversation sidebar)      │
 └──────────────────────────┬──────────────────────────────────────┘
                            │ HTTP
 ┌──────────────────────────▼──────────────────────────────────────┐
-│                         .NET API                                 │
-│  (Authentication, User → Conversation mapping, Session mgmt)     │
+│                         .NET API                                │
+│  (Authentication, User → Conversation mapping, Session mgmt)    │
 └──────────────────────────┬──────────────────────────────────────┘
                            │ HTTP
 ┌──────────────────────────▼──────────────────────────────────────┐
-│                      FastAPI RAG Server                          │
-│                      (port 5000, systemd)                        │
-│                                                                  │
+│                      FastAPI RAG Server                         │
+│                      (port 5000, systemd)                       │
+│                                                                 │
 │  ┌──────────────────────────────────────────────────────────┐   │
-│  │  Routes (HTTP Layer)                                      │   │
-│  │  base.py  |  data.py  |  nlp.py                           │   │
+│  │  Routes (HTTP Layer)                                     │   │
+│  │  base.py  |  data.py  |  nlp.py                          │   │
 │  └──────────────────────┬───────────────────────────────────┘   │
-│                         │                                         │
+│                         │                                       │
 │  ┌──────────────────────▼───────────────────────────────────┐   │
-│  │  Controllers (Business Logic)                             │   │
+│  │  Controllers (Business Logic)                            │   │
 │  │  DataController | ProcessController | NLPController      │   │
 │  └──────────────────────┬───────────────────────────────────┘   │
-│                         │                                         │
+│                         │                                       │
 │  ┌──────────────────────▼───────────────────────────────────┐   │
-│  │  Models (MongoDB Access)     │  Stores (External APIs)    │   │
-│  │  AssetModel                  │  OpenAIProvider            │   │
-│  │  ChunkModel                  │  QdrantDBProvider          │   │
-│  │  ConversationModel           │  TemplateParser            │   │
+│  │  Models (MongoDB Access)     │  Stores (External APIs)   │   │
+│  │  AssetModel                  │  OpenAIProvider           │   │
+│  │  ChunkModel                  │  QdrantDBProvider         │   │
+│  │  ConversationModel           │  TemplateParser           │   │
 │  └──────────────────────────────┴───────────────────────────┘   │
-│                                                                  │
-│  ┌───────────────┐  ┌────────────────┐  ┌──────────────────┐   │
-│  │   MongoDB     │  │   Qdrant Cloud │  │   OpenAI API     │   │
-│  │   Atlas       │  │   Vector Store │  │   gpt-4o-mini    │   │
-│  │               │  │                │  │   embeddings     │   │
-│  └───────────────┘  └────────────────┘  └──────────────────┘   │
+│                                                                 │
+│  ┌───────────────┐  ┌────────────────┐  ┌──────────────────┐    │
+│  │   MongoDB     │  │   Qdrant Cloud │  │   OpenAI API     │    │
+│  │   Atlas       │  │   Vector Store │  │   gpt-4o-mini    │    │
+│  │               │  │                │  │   embeddings     │    │
+│  └───────────────┘  └────────────────┘  └──────────────────┘    │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
