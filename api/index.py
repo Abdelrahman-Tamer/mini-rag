@@ -138,5 +138,6 @@ async def catch_all(request: Request, full_path: str = ""):
         "debug_404_inspector": True,
         "received_full_path": full_path,
         "request_url_path": request.url.path,
-        "scope_path": request.scope.get("path")
+        "scope_path": request.scope.get("path"),
+        "headers": dict(request.headers)
     }
