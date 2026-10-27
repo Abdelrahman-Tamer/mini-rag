@@ -34,8 +34,8 @@ class Settings(BaseSettings):
     DISTANCE_METHOD: Optional[str] = "cosine"
     QDRANT_DB_API_KEY: str = ""
 
-    PRIMARY_LANG: str = "en"
-    DEFAULT_LANG: str = "en"
+    PRIMARY_LANG: str = "ar"
+    DEFAULT_LANG: str = "ar"
 
     SCORE_THRESHOLD: float = 0.2
 
