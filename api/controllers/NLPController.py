@@ -87,6 +87,11 @@ class NLPController(BaseController):
 
     def generate_chat_answer(self, query: str, retrieved_documents: list, prior_history: list = None, system_prompt: str = None):
 
+        # Dynamically set language from query
+        is_ar = any('\u0600' <= char <= '\u06ff' for char in query)
+        detected_lang = "ar" if is_ar else "en"
+        self.template_parser.set_language(detected_lang)
+
         if system_prompt is None:
             system_prompt = self.template_parser.get("rag", "system_prompt")
 
