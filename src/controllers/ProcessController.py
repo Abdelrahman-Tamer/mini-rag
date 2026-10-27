@@ -1,10 +1,5 @@
 from .BaseController import BaseController
 import os
-from langchain_community.document_loaders import TextLoader
-from langchain_community.document_loaders import PyMuPDFLoader
-from langchain_community.document_loaders import CSVLoader
-from langchain_community.document_loaders import Docx2txtLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from models import ProcessingEnum
 
 
@@ -27,6 +22,7 @@ class ProcessController(BaseController):
         if not os.path.exists(file_path):
             return None
 
+        from langchain_community.document_loaders import TextLoader, PyMuPDFLoader, CSVLoader, Docx2txtLoader
         loaders = {
             ProcessingEnum.TXT.value: TextLoader,
             ProcessingEnum.PDF.value: PyMuPDFLoader,
@@ -58,6 +54,7 @@ class ProcessController(BaseController):
                             chunk_size: int = 100, overlap_size: int = 20,
                             metadata: dict = None):
 
+        from langchain_text_splitters import RecursiveCharacterTextSplitter
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
             chunk_overlap=overlap_size,

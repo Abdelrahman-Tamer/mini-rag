@@ -154,19 +154,33 @@ class QdrantDBProvider(VectorDBInterface):
         return True
 
     def search_by_vector(self, collection_name: str, vector: list, limit: int = 5, filter: Optional[dict] = None):
+        if not self.is_collection_existed(collection_name):
+            return None
 
         query_filter = self._build_filter(filter) if filter else None
 
-        results = self.client.search(
-            collection_name=collection_name,
-            query_vector=vector,
-            limit=limit,
-            query_filter=query_filter
-        )
+        try:
+            if hasattr(self.client, "query_points"):
+                response = self.client.query_points(
+                    collection_name=collection_name,
+                    query=vector,
+                    limit=limit,
+                    query_filter=query_filter,
+                )
+                results = response.points if response else []
+            else:
+                results = self.client.search(
+                    collection_name=collection_name,
+                    query_vector=vector,
+                    limit=limit,
+                    query_filter=query_filter,
+                )
+        except Exception as e:
+            self.logger.error(f"Error during vector search: {e}")
+            return None
 
         if not results or len(results) == 0:
             return None
-
         return [
             RetrievedDocument(**{
                 "score": result.score,
