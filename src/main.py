@@ -6,7 +6,9 @@ from helpers.config import get_settings
 from stores.llm.LLMProviderFactory import LLMProviderFactory
 from stores.vectordb.VectorDBProviderFactory import VectorDBProviderFactory
 from stores.llm.templates.template_parser import TemplateParser
+from fastapi.responses import JSONResponse
 import logging
+import traceback
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -55,7 +57,15 @@ app.add_middleware(
 @app.middleware("http")
 async def ensure_initialized_middleware(request: Request, call_next):
     if not getattr(app.state, "initialized", False):
-        await startup_span()
+        try:
+            await startup_span()
+        except Exception as e:
+            err = traceback.format_exc()
+            logger.error(f"Startup error: {err}")
+            return JSONResponse(
+                status_code=500,
+                content={"error": "Service Initialization Failed", "details": str(e), "traceback": err}
+            )
     response = await call_next(request)
     return response
 
