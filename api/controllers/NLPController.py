@@ -310,6 +310,12 @@ class NLPController(BaseController):
         """
         Removes an activity from Qdrant.
         """
+        if hasattr(self.vectordb_client, "delete_by_id"):
+            self.vectordb_client.delete_by_id(
+                collection_name=self.collection_name,
+                record_id=activity_id
+            )
+
         if hasattr(self.vectordb_client, "delete_by_filter"):
             self.vectordb_client.delete_by_filter(
                 collection_name=self.collection_name,

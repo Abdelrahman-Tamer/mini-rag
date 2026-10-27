@@ -2,7 +2,7 @@ from qdrant_client import models, QdrantClient
 from ..VectorDBInterface import VectorDBInterface
 from ..VectorDBEnums import DistanceMethodEnums
 import logging
-from typing import List, Optional
+from typing import List, Optional, Any
 from models.db_schemes import RetrievedDocument
 
 
@@ -93,12 +93,13 @@ class QdrantDBProvider(VectorDBInterface):
             self.logger.error(f"Can not insert new record to non-existed collection: {collection_name}")
             return False
 
+        point_id = int(record_id) if str(record_id).isdigit() else record_id
         try:
             _ = self.client.upload_records(
                 collection_name=collection_name,
                 records=[
                     models.Record(
-                        id=[record_id],
+                        id=point_id,
                         vector=vector,
                         payload={
                             "text": text, "metadata": metadata
@@ -107,7 +108,7 @@ class QdrantDBProvider(VectorDBInterface):
                 ]
             )
         except Exception as e:
-            self.logger.error(f"Error while inserting batch: {e}")
+            self.logger.error(f"Error while inserting record: {e}")
             return False
 
         return True
@@ -198,11 +199,30 @@ class QdrantDBProvider(VectorDBInterface):
         if not query_filter:
             return False
 
-        self.client.delete(
-            collection_name=collection_name,
-            points_selector=models.FilterSelector(
-                filter=query_filter
+        try:
+            self.client.delete(
+                collection_name=collection_name,
+                points_selector=models.FilterSelector(
+                    filter=query_filter
+                )
             )
-        )
+            return True
+        except Exception as e:
+            self.logger.error(f"Error during delete_by_filter: {e}")
+            return False
 
-        return True
+    def delete_by_id(self, collection_name: str, record_id: Any):
+        if not self.is_collection_existed(collection_name):
+            return False
+        point_id = int(record_id) if str(record_id).isdigit() else record_id
+        try:
+            self.client.delete(
+                collection_name=collection_name,
+                points_selector=models.PointIdsList(
+                    points=[point_id]
+                )
+            )
+            return True
+        except Exception as e:
+            self.logger.error(f"Error during delete_by_id: {e}")
+            return False
