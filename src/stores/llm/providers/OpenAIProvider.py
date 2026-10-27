@@ -1,6 +1,7 @@
 from ..LLMInterface import LLMInterface
 from ..LLMEnums import OpenAIEnums
 from openai import OpenAI
+from typing import Any
 import logging
 
 class OpenAIProvider(LLMInterface):
@@ -38,9 +39,11 @@ class OpenAIProvider(LLMInterface):
         self.embedding_size = embedding_size
 
     def process_text(self, text: str):
+        if not text or not isinstance(text, str):
+            return str(text or "")
         return text[:self.default_input_max_characters].strip()
 
-    def generate_text(self, prompt: str, chat_history: list=[], max_output_tokens: int=None,
+    def generate_text(self, prompt: Any, chat_history: list = None, max_output_tokens: int = None,
                             temperature: float = None):
         
         if not self.client:
@@ -54,13 +57,17 @@ class OpenAIProvider(LLMInterface):
         max_output_tokens = max_output_tokens if max_output_tokens else self.default_generation_max_output_tokens
         temperature = temperature if temperature else self.default_generation_temperature
 
-        chat_history.append(
-            self.construct_prompt(prompt=prompt, role=OpenAIEnums.USER.value)
-        )
+        if isinstance(prompt, list):
+            messages = list(prompt)
+        else:
+            messages = list(chat_history) if chat_history else []
+            messages.append(
+                self.construct_prompt(prompt=str(prompt or ""), role=OpenAIEnums.USER.value)
+            )
 
         response = self.client.chat.completions.create(
             model = self.generation_model_id,
-            messages = chat_history,
+            messages = messages,
             max_tokens = max_output_tokens,
             temperature = temperature
         )
@@ -70,7 +77,6 @@ class OpenAIProvider(LLMInterface):
             return None
 
         return response.choices[0].message.content
-
 
     def embed_text(self, text: str, document_type: str = None):
         
@@ -98,8 +104,3 @@ class OpenAIProvider(LLMInterface):
             "role": role,
             "content": self.process_text(prompt)
         }
-    
-
-
-    
-
