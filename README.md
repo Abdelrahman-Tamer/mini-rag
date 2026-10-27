@@ -1,4 +1,13 @@
-# 🏛️ Full RAG — Multi-City Tourism Chatbot
+﻿---
+title: NileGuide RAG
+emoji: 🏛️
+colorFrom: indigo
+colorTo: blue
+sdk: docker
+app_port: 7860
+pinned: false
+---
+# ðŸ›ï¸ Full RAG â€” Multi-City Tourism Chatbot
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.10%2B-blue?style=for-the-badge&logo=python" alt="Python">
@@ -13,69 +22,69 @@
 
 <p align="center">
   <b>A production-ready Retrieval-Augmented Generation chatbot for tourism insights.</b><br>
-  Users ask about cities, attractions, restaurants, hotels, and shopping —<br>
+  Users ask about cities, attractions, restaurants, hotels, and shopping â€”<br>
   the system retrieves relevant document chunks and generates grounded answers via OpenAI.
 </p>
 
 ---
 
-## ✨ Features
+## âœ¨ Features
 
 | Feature | Description |
 |---------|-------------|
-| 🧠 **Stateful Conversations** | History persisted in MongoDB — resume any chat, anywhere |
-| 🔄 **Query Rewriting** | Follow-ups like "what about hotels there?" → standalone search query |
-| 🏷️ **Auto-Titling** | First user message becomes the conversation title — sidebar ready |
-| 📄 **Multi-File Upload** | Batch upload PDF/DOCX/CSV/TXT — auto-chunked at 500 chars |
-| 🏙️ **Single Collection** | All cities share one Qdrant collection — metadata-based filtering |
-| 🌐 **Cairo Timezone** | All timestamps in `Africa/Cairo` — Egypt tourism focus |
-| 👋 **Greeting Detection** | "Hi", "Hello", "مرحبا" → warm welcome, no vector search |
-| 📎 **Source Citations** | Every answer includes document name, city, score, and excerpt |
+| ðŸ§  **Stateful Conversations** | History persisted in MongoDB â€” resume any chat, anywhere |
+| ðŸ”„ **Query Rewriting** | Follow-ups like "what about hotels there?" â†’ standalone search query |
+| ðŸ·ï¸ **Auto-Titling** | First user message becomes the conversation title â€” sidebar ready |
+| ðŸ“„ **Multi-File Upload** | Batch upload PDF/DOCX/CSV/TXT â€” auto-chunked at 500 chars |
+| ðŸ™ï¸ **Single Collection** | All cities share one Qdrant collection â€” metadata-based filtering |
+| ðŸŒ **Cairo Timezone** | All timestamps in `Africa/Cairo` â€” Egypt tourism focus |
+| ðŸ‘‹ **Greeting Detection** | "Hi", "Hello", "Ù…Ø±Ø­Ø¨Ø§" â†’ warm welcome, no vector search |
+| ðŸ“Ž **Source Citations** | Every answer includes document name, city, score, and excerpt |
 
 ---
 
-## 🏗️ Architecture
+## ðŸ—ï¸ Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                       Angular Frontend                          │
-│          Chat UI + Conversation Sidebar + File Manager          │
-└────────────────────────────┬────────────────────────────────────┘
-                             │ HTTP
-┌────────────────────────────▼────────────────────────────────────┐
-│                         .NET API                                │
-│          Authentication · User → Conversation Mapping           │
-└────────────────────────────┬────────────────────────────────────┘
-                             │ HTTP
-┌────────────────────────────▼────────────────────────────────────┐
-│                      FastAPI RAG Server                         │
-│                                                                 │
-│  ┌──────────────────────┐   ┌────────────────────────────────┐  │
-│  │      Routes          │   │         Controllers            │  │
-│  │  · Health (/)        │   │  · DataController — validation │  │
-│  │  · Data (/data)      │   │  · ProcessController — chunking│  │
-│  │  · Chat (/nlp)       │   │  · NLPController — RAG engine  │  │
-│  └──────────────────────┘   └────────────────────────────────┘  │
-│                                                                 │
-│  ┌──────────────────────┐   ┌────────────────────────────────┐  │
-│  │       Models         │   │          Stores                │  │
-│  │  · AssetModel        │   │  · OpenAIProvider (gpt-4o-mini)│  │
-│  │  · ChunkModel        │   │  · OpenAIProvider (embeddings) │  │
-│  │  · ConversationModel │   │  · QdrantDBProvider            │  │
-│  └──────────────────────┘   └────────────────────────────────┘  │
-│                                                                 │
-│  ┌──────────────┐  ┌────────────────┐  ┌────────────────────┐   │
-│  │   MongoDB    │  │   Qdrant Cloud │  │   OpenAI API       │   │
-│  │   Atlas      │  │   vectors      │  │   generation + emb │   │
-│  └──────────────┘  └────────────────┘  └────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚                       Angular Frontend                          â”‚
+â”‚          Chat UI + Conversation Sidebar + File Manager          â”‚
+â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+                             â”‚ HTTP
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â–¼â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚                         .NET API                                â”‚
+â”‚          Authentication Â· User â†’ Conversation Mapping           â”‚
+â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+                             â”‚ HTTP
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â–¼â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚                      FastAPI RAG Server                         â”‚
+â”‚                                                                 â”‚
+â”‚  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”   â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”  â”‚
+â”‚  â”‚      Routes          â”‚   â”‚         Controllers            â”‚  â”‚
+â”‚  â”‚  Â· Health (/)        â”‚   â”‚  Â· DataController â€” validation â”‚  â”‚
+â”‚  â”‚  Â· Data (/data)      â”‚   â”‚  Â· ProcessController â€” chunkingâ”‚  â”‚
+â”‚  â”‚  Â· Chat (/nlp)       â”‚   â”‚  Â· NLPController â€” RAG engine  â”‚  â”‚
+â”‚  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜   â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜  â”‚
+â”‚                                                                 â”‚
+â”‚  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”   â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”  â”‚
+â”‚  â”‚       Models         â”‚   â”‚          Stores                â”‚  â”‚
+â”‚  â”‚  Â· AssetModel        â”‚   â”‚  Â· OpenAIProvider (gpt-4o-mini)â”‚  â”‚
+â”‚  â”‚  Â· ChunkModel        â”‚   â”‚  Â· OpenAIProvider (embeddings) â”‚  â”‚
+â”‚  â”‚  Â· ConversationModel â”‚   â”‚  Â· QdrantDBProvider            â”‚  â”‚
+â”‚  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜   â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜  â”‚
+â”‚                                                                 â”‚
+â”‚  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”   â”‚
+â”‚  â”‚   MongoDB    â”‚  â”‚   Qdrant Cloud â”‚  â”‚   OpenAI API       â”‚   â”‚
+â”‚  â”‚   Atlas      â”‚  â”‚   vectors      â”‚  â”‚   generation + emb â”‚   â”‚
+â”‚  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜   â”‚
+â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
 ```
 
-**Data flow**: `Angular UI ↔ .NET Auth ↔ FastAPI RAG ↔ OpenAI + Qdrant + MongoDB`
+**Data flow**: `Angular UI â†” .NET Auth â†” FastAPI RAG â†” OpenAI + Qdrant + MongoDB`
 
 ---
 
-## 🚀 Quick Start
+## ðŸš€ Quick Start
 
 ### Prerequisites
 
@@ -122,7 +131,7 @@ git pull && pip install -r requirements.txt -q && sudo systemctl restart rag
 
 ---
 
-## 📡 API Reference
+## ðŸ“¡ API Reference
 
 ### Health Check
 
@@ -136,7 +145,7 @@ GET /api/v1/
 
 ---
 
-### 💬 Conversations
+### ðŸ’¬ Conversations
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -165,7 +174,7 @@ GET /api/v1/
 
 ---
 
-### 🤖 Chat
+### ðŸ¤– Chat
 
 ```
 POST /api/v1/nlp/chat
@@ -173,9 +182,9 @@ POST /api/v1/nlp/chat
 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `text` | `string` | ✅ | — | User's question |
-| `conversation_id` | `string` | ❌ | `null` | Existing conversation to continue |
-| `limit` | `int` | ❌ | `5` | Max sources to retrieve |
+| `text` | `string` | âœ… | â€” | User's question |
+| `conversation_id` | `string` | âŒ | `null` | Existing conversation to continue |
+| `limit` | `int` | âŒ | `5` | Max sources to retrieve |
 
 ```json
 {
@@ -205,7 +214,7 @@ POST /api/v1/nlp/chat
 
 ---
 
-### 📁 File Management
+### ðŸ“ File Management
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -219,9 +228,9 @@ POST /api/v1/nlp/chat
 Multipart form:
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
-| `files` | `UploadFile[]` | ✅ | — | PDF, DOCX, CSV, or TXT files |
-| `chunk_size` | `int` | ❌ | `500` | Characters per chunk |
-| `overlap_size` | `int` | ❌ | `20` | Chunk overlap characters |
+| `files` | `UploadFile[]` | âœ… | â€” | PDF, DOCX, CSV, or TXT files |
+| `chunk_size` | `int` | âŒ | `500` | Characters per chunk |
+| `overlap_size` | `int` | âŒ | `20` | Chunk overlap characters |
 
 ```json
 // Response
@@ -238,7 +247,7 @@ Multipart form:
 
 ---
 
-## ⚙️ Configuration
+## âš™ï¸ Configuration
 
 All configuration is via `.env`. See [`.env.example`](src/.env.example) for a template.
 
@@ -271,79 +280,79 @@ All configuration is via `.env`. See [`.env.example`](src/.env.example) for a te
 
 ---
 
-## 📂 Project Structure
+## ðŸ“‚ Project Structure
 
 ```
 src/
-├── main.py                       # FastAPI entry point
-├── .env.example                  # Configuration template
-│
-├── routes/                       # HTTP layer
-│   ├── base.py                   # GET /api/v1/ — health check
-│   ├── data.py                   # File upload/list/update/delete
-│   └── nlp.py                    # Conversation CRUD + chat
-│
-├── controllers/                  # Business logic
-│   ├── BaseController.py         # Shared base
-│   ├── DataController.py         # File validation
-│   ├── ProcessController.py      # Document loading & chunking
-│   └── NLPController.py          # RAG engine (chat, search, index)
-│
-├── models/                       # MongoDB data access
-│   ├── AssetModel.py             # File metadata CRUD
-│   ├── ChunkModel.py             # Text chunk CRUD
-│   ├── ConversationModel.py      # Chat history CRUD
-│   └── db_schemes/               # Pydantic schemas
-│
-├── stores/                       # External service abstractions
-│   ├── llm/                      # OpenAI provider + prompt templates
-│   └── vectordb/                 # Qdrant provider
-│
-├── helpers/config.py             # Settings loader from .env
-└── assets/files/                 # Uploaded files on disk
+â”œâ”€â”€ main.py                       # FastAPI entry point
+â”œâ”€â”€ .env.example                  # Configuration template
+â”‚
+â”œâ”€â”€ routes/                       # HTTP layer
+â”‚   â”œâ”€â”€ base.py                   # GET /api/v1/ â€” health check
+â”‚   â”œâ”€â”€ data.py                   # File upload/list/update/delete
+â”‚   â””â”€â”€ nlp.py                    # Conversation CRUD + chat
+â”‚
+â”œâ”€â”€ controllers/                  # Business logic
+â”‚   â”œâ”€â”€ BaseController.py         # Shared base
+â”‚   â”œâ”€â”€ DataController.py         # File validation
+â”‚   â”œâ”€â”€ ProcessController.py      # Document loading & chunking
+â”‚   â””â”€â”€ NLPController.py          # RAG engine (chat, search, index)
+â”‚
+â”œâ”€â”€ models/                       # MongoDB data access
+â”‚   â”œâ”€â”€ AssetModel.py             # File metadata CRUD
+â”‚   â”œâ”€â”€ ChunkModel.py             # Text chunk CRUD
+â”‚   â”œâ”€â”€ ConversationModel.py      # Chat history CRUD
+â”‚   â””â”€â”€ db_schemes/               # Pydantic schemas
+â”‚
+â”œâ”€â”€ stores/                       # External service abstractions
+â”‚   â”œâ”€â”€ llm/                      # OpenAI provider + prompt templates
+â”‚   â””â”€â”€ vectordb/                 # Qdrant provider
+â”‚
+â”œâ”€â”€ helpers/config.py             # Settings loader from .env
+â””â”€â”€ assets/files/                 # Uploaded files on disk
 ```
 
 For a complete deep-dive into every file, function, and endpoint, see [**ARCHITECTURE.md**](ARCHITECTURE.md).
 
 ---
 
-## 🔄 Chat Flow
+## ðŸ”„ Chat Flow
 
 ```
 User: "What hotels are in Luxor?"
-        │
-        ▼
+        â”‚
+        â–¼
   1. Load conversation history from MongoDB
-        │
-        ▼
-  2. Is it a greeting? ─── Yes → Warm welcome (skip search)
-        │ No
-        ▼
+        â”‚
+        â–¼
+  2. Is it a greeting? â”€â”€â”€ Yes â†’ Warm welcome (skip search)
+        â”‚ No
+        â–¼
   3. Rewrite query with last 5 turns of context
-     "What hotels are in Luxor?" → "What hotels are in Luxor?"
-        │
-        ▼
-  4. Embed → Qdrant search → filter by score ≥ 0.4
-        │
-        ▼
+     "What hotels are in Luxor?" â†’ "What hotels are in Luxor?"
+        â”‚
+        â–¼
+  4. Embed â†’ Qdrant search â†’ filter by score â‰¥ 0.4
+        â”‚
+        â–¼
   5. Send docs + last 5 turns to GPT-4o-mini
-        │
-        ▼
+        â”‚
+        â–¼
   6. Save Q&A to MongoDB
-        │
-        ▼
+        â”‚
+        â–¼
   7. Return { answer, sources }
 ```
 
 **Why this works better than a naive RAG:**
-- 🔄 **Query rewriting** handles follow-ups naturally ("what about there?" → "hotels in Luxor")
-- 🧹 **History truncation** keeps latency predictable as conversations grow
-- 📏 **Budget trimming** prevents silent prompt truncation by the LLM
-- 🗄️ **Persistent MongoDB history** survives server restarts
+- ðŸ”„ **Query rewriting** handles follow-ups naturally ("what about there?" â†’ "hotels in Luxor")
+- ðŸ§¹ **History truncation** keeps latency predictable as conversations grow
+- ðŸ“ **Budget trimming** prevents silent prompt truncation by the LLM
+- ðŸ—„ï¸ **Persistent MongoDB history** survives server restarts
 
 ---
 
-## 🛠️ Tech Stack
+## ðŸ› ï¸ Tech Stack
 
 | Category | Technology | Purpose |
 |----------|-----------|---------|
@@ -359,22 +368,22 @@ User: "What hotels are in Luxor?"
 
 ---
 
-## 📖 Documentation
+## ðŸ“– Documentation
 
 | Document | Description |
 |----------|-------------|
-| [`README.md`](README.md) | This file — quick start + overview |
-| [`ARCHITECTURE.md`](ARCHITECTURE.md) | Complete architecture — every file, endpoint, function explained |
-| [`CODEBASE_CONSCIOUSNESS.md`](CODEBASE_CONSCIOUSNESS.md) | Internal dev reference — bugs, dead code, recent changes |
+| [`README.md`](README.md) | This file â€” quick start + overview |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | Complete architecture â€” every file, endpoint, function explained |
+| [`CODEBASE_CONSCIOUSNESS.md`](CODEBASE_CONSCIOUSNESS.md) | Internal dev reference â€” bugs, dead code, recent changes |
 
 ---
 
-## 🤝 Contributing
+## ðŸ¤ Contributing
 
 This is a graduation project. Contributions, issues, and feature requests are welcome!
 
 ---
 
-## 📄 License
+## ðŸ“„ License
 
 [MIT](LICENSE)

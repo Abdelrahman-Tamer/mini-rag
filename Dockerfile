@@ -7,12 +7,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY src/requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN useradd -m -u 1000 user
+USER user
+ENV HOME=/home/user \
+    PATH=/home/user/.local/bin:$PATH
 
-COPY src/ ./
+WORKDIR $HOME/app
 
-ENV PORT=8000
-EXPOSE 8000
+COPY --chown=user src/requirements.txt ./
+RUN pip install --no-cache-dir --user -r requirements.txt
 
-CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}
+COPY --chown=user src/ ./
+
+ENV PORT=7860
+EXPOSE 7860
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860"]
