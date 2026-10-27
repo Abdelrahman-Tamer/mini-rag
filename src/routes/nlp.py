@@ -9,6 +9,7 @@ import logging
 import json
 import asyncio
 import urllib.request
+import traceback
 
 logger = logging.getLogger('uvicorn.error')
 
@@ -110,13 +111,20 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
             }
         )
 
-    results = nlp_controller.chat(
-        query=text,
-        limit=chat_request.limit,
-        prior_history=prior_history,
-        city=chat_request.city,
-        category=chat_request.category,
-    )
+    try:
+        results = nlp_controller.chat(
+            query=text,
+            limit=chat_request.limit,
+            prior_history=prior_history,
+            city=chat_request.city,
+            category=chat_request.category,
+        )
+    except Exception as e:
+        logger.error(f"Error during nlp_controller.chat: {traceback.format_exc()}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": "chat_retrieval_failed", "details": str(e), "traceback": traceback.format_exc()}
+        )
 
     if not results:
         fallback_prompt = (
@@ -125,12 +133,19 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
             "Always respond in the exact same language as the user (English if asked in English, Arabic if asked in Arabic). "
             "Keep your tone welcoming and informative."
         )
-        answer, full_prompt, _ = nlp_controller.generate_chat_answer(
-            query=text,
-            retrieved_documents=[],
-            prior_history=prior_history,
-            system_prompt=fallback_prompt,
-        )
+        try:
+            answer, full_prompt, _ = nlp_controller.generate_chat_answer(
+                query=text,
+                retrieved_documents=[],
+                prior_history=prior_history,
+                system_prompt=fallback_prompt,
+            )
+        except Exception as e:
+            logger.error(f"Error during fallback generation: {traceback.format_exc()}")
+            return JSONResponse(
+                status_code=500,
+                content={"error": "fallback_generation_failed", "details": str(e), "traceback": traceback.format_exc()}
+            )
         answer = answer or "I couldn't find any relevant information on that topic. Try asking about a different destination!"
         if conversation_model and chat_request.conversation_id:
             await conversation_model.append_turn(
@@ -162,11 +177,18 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
         for doc in results
     ]
 
-    answer, full_prompt, _ = nlp_controller.generate_chat_answer(
-        query=text,
-        retrieved_documents=results,
-        prior_history=prior_history
-    )
+    try:
+        answer, full_prompt, _ = nlp_controller.generate_chat_answer(
+            query=text,
+            retrieved_documents=results,
+            prior_history=prior_history
+        )
+    except Exception as e:
+        logger.error(f"Error during generate_chat_answer: {traceback.format_exc()}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": "chat_generation_failed", "details": str(e), "traceback": traceback.format_exc()}
+        )
 
     if not answer:
         return JSONResponse(
