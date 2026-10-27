@@ -19,7 +19,7 @@ class DataController(BaseController):
         if ext not in self.app_settings.FILE_ALLOWED_EXTENSIONS:
             return False, ResponseSignal.FILE_TYPE_NOT_SUPPORTED.value
 
-        if file.size > self.app_settings.FILE_MAX_SIZE * self.size_scale:
+        if file.size and file.size > self.app_settings.FILE_MAX_SIZE * self.size_scale:
             return False, ResponseSignal.FILE_SIZE_EXCEEDED.value
 
         return True, ResponseSignal.FILE_VALIDATED_SUCCESS.value
@@ -48,10 +48,7 @@ class DataController(BaseController):
 
     def get_clean_file_name(self, orig_file_name: str):
 
-        # remove any special characters, except underscore and .
-        cleaned_file_name = re.sub(r'[^\w.]', '', orig_file_name.strip())
-
-        # replace spaces with underscore
+        basename = os.path.basename(orig_file_name or "file")
+        cleaned_file_name = re.sub(r'[^\w.]', '', basename.strip())
         cleaned_file_name = cleaned_file_name.replace(" ", "_")
-
-        return cleaned_file_name
+        return cleaned_file_name or "document"

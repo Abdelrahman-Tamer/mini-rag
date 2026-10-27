@@ -38,10 +38,9 @@ class Settings(BaseSettings):
     DEFAULT_LANG: str = "ar"
 
     SCORE_THRESHOLD: float = 0.2
+    SYNC_API_KEY: Optional[str] = ""
 
-    class Config:
-        env_file = ".env"
-        extra = "ignore"
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 def get_settings():
     return Settings()

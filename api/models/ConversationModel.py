@@ -39,13 +39,17 @@ class ConversationModel(BaseDataModel):
         record = await self.collection.find_one({"_id": conversation_id})
         return Conversation(**record) if record else None
 
-    async def append_turn(self, conversation_id: str, user_msg: str, assistant_msg: str):
+    async def append_turn(self, conversation_id: str, user_msg: str, assistant_msg: str, assistant_sources: list = None):
         now = datetime.now(ZoneInfo("Africa/Cairo"))
 
         await self.collection.update_one(
             {"_id": conversation_id, "title": {"$in": ["", None]}},
             {"$set": {"title": user_msg[:100]}},
         )
+
+        assistant_turn = {"role": "assistant", "content": assistant_msg}
+        if assistant_sources:
+            assistant_turn["sources"] = assistant_sources
 
         await self.collection.update_one(
             {"_id": conversation_id},
@@ -54,7 +58,7 @@ class ConversationModel(BaseDataModel):
                     "history": {
                         "$each": [
                             {"role": "user", "content": user_msg},
-                            {"role": "assistant", "content": assistant_msg},
+                            assistant_turn,
                         ]
                     }
                 },

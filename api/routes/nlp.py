@@ -1,12 +1,14 @@
 from fastapi import FastAPI, APIRouter, status, Request, Query
-from fastapi.responses import JSONResponse
-from routes.schemes.nlp import ChatRequest
+from fastapi.responses import JSONResponse, StreamingResponse
+from routes.schemes.nlp import ChatRequest, SyncActivityRequest
 from controllers import NLPController
 from models import ResponseSignal, ConversationModel
 import os
 from zoneinfo import ZoneInfo
-
 import logging
+import json
+import asyncio
+import urllib.request
 
 logger = logging.getLogger('uvicorn.error')
 
@@ -66,18 +68,15 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
         template_parser=request.app.template_parser,
     )
 
-    # validate non-empty query
     text = chat_request.text.strip() if chat_request.text else ""
     if not text:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={
                 "signal": ResponseSignal.INVALID_QUERY.value,
-                "message": "Please enter a valid question.",
             }
         )
 
-    # load history from MongoDB by conversation_id
     prior_history = []
     conversation_model = None
     if chat_request.conversation_id:
@@ -88,26 +87,19 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
         if conv:
             prior_history = conv.history
 
-    # handle greetings: skip retrieval, respond naturally
     if nlp_controller.is_greeting_query(text):
-        greeting_system = (
-            "You are a friendly travel assistant. "
-            "The user just greeted you. Respond warmly in the same language as them. "
-            "Offer to help with travel questions about cities, attractions, food, hotels, and shopping. "
-            "Keep it short and welcoming."
-        )
-        answer, full_prompt, _ = nlp_controller.generate_chat_answer(
-            query=text,
-            retrieved_documents=[],
-            prior_history=prior_history,
-            system_prompt=greeting_system,
-        )
-        answer = answer or "Hello! How can I help you plan your trip?"
+        is_ar = any('\u0600' <= c <= '\u06ff' for c in text)
+        if is_ar:
+            answer = "أهلاً بك في NileGuide! كيف يمكنني مساعدتك في استكشاف مصر اليوم؟"
+        else:
+            answer = "Hello and welcome to NileGuide! How can I help you explore Egypt today?"
+
         if conversation_model and chat_request.conversation_id:
             await conversation_model.append_turn(
                 conversation_id=chat_request.conversation_id,
                 user_msg=text,
                 assistant_msg=answer,
+                assistant_sources=[]
             )
         return JSONResponse(
             content={
@@ -122,15 +114,16 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
         query=text,
         limit=chat_request.limit,
         prior_history=prior_history,
+        city=chat_request.city,
+        category=chat_request.category,
     )
 
     if not results:
         fallback_prompt = (
             "You are NileGuide's expert travel assistant for Egypt and world tourism. "
-            "Provide a comprehensive, helpful, and engaging answer to the user's travel question, "
-            "offering top recommendations (such as attractions, activities, culture, food, and insider travel tips). "
-            "Respond in the same language as the user (e.g., English if asked in English, Arabic if asked in Arabic). "
-            "Keep your tone warm, welcoming, and informative."
+            "Provide a comprehensive, helpful, and concise answer to the user's travel question. "
+            "Always respond in the exact same language as the user (English if asked in English, Arabic if asked in Arabic). "
+            "Keep your tone welcoming and informative."
         )
         answer, full_prompt, _ = nlp_controller.generate_chat_answer(
             query=text,
@@ -144,6 +137,7 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
                 conversation_id=chat_request.conversation_id,
                 user_msg=text,
                 assistant_msg=answer,
+                assistant_sources=[]
             )
         return JSONResponse(
             content={
@@ -187,6 +181,7 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
             conversation_id=chat_request.conversation_id,
             user_msg=text,
             assistant_msg=answer,
+            assistant_sources=sources[:3],
         )
 
     return JSONResponse(
@@ -197,3 +192,140 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
             "sources": sources,
         }
     )
+
+
+@nlp_router.post("/chat/stream")
+async def chat_stream_endpoint(request: Request, chat_request: ChatRequest):
+    nlp_controller = NLPController(
+        vectordb_client=request.app.vectordb_client,
+        generation_client=request.app.generation_client,
+        embedding_client=request.app.embedding_client,
+        template_parser=request.app.template_parser,
+    )
+
+    text = chat_request.text.strip() if chat_request.text else ""
+    if not text:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"signal": ResponseSignal.INVALID_QUERY.value}
+        )
+
+    prior_history = []
+    conversation_model = None
+    if chat_request.conversation_id:
+        conversation_model = await ConversationModel.create_instance(
+            db_client=request.app.db_client
+        )
+        conv = await conversation_model.get_conversation(chat_request.conversation_id)
+        if conv:
+            prior_history = conv.history
+
+    results = nlp_controller.chat(
+        query=text,
+        limit=chat_request.limit,
+        prior_history=prior_history,
+        city=chat_request.city,
+        category=chat_request.category,
+    ) or []
+
+    sources = [
+        {
+            "activity_id": doc.metadata.get("activity_id") if doc.metadata else None,
+            "title": doc.metadata.get("title") or (os.path.basename(doc.metadata.get("source", "")) if doc.metadata else ""),
+            "city": doc.metadata.get("city") if doc.metadata else None,
+            "category": doc.metadata.get("category") if doc.metadata else None,
+            "price": doc.metadata.get("price") if doc.metadata else None,
+            "image_url": doc.metadata.get("image_url") if doc.metadata else None,
+            "link": doc.metadata.get("link") or (f"https://www.nileguide.online/activities/{doc.metadata.get('activity_id')}" if doc.metadata and doc.metadata.get("activity_id") else None),
+            "score": round(doc.score, 4),
+        }
+        for doc in results
+    ]
+
+    answer, _, _ = nlp_controller.generate_chat_answer(
+        query=text,
+        retrieved_documents=results,
+        prior_history=prior_history,
+    )
+    answer = answer or "No results found."
+
+    if conversation_model and chat_request.conversation_id:
+        await conversation_model.append_turn(
+            conversation_id=chat_request.conversation_id,
+            user_msg=text,
+            assistant_msg=answer,
+            assistant_sources=sources[:3],
+        )
+
+    async def event_generator():
+        yield f"event: sources\ndata: {json.dumps(sources[:3])}\n\n"
+        words = answer.split(" ")
+        for i, word in enumerate(words):
+            chunk = word + (" " if i < len(words) - 1 else "")
+            yield f"event: delta\ndata: {json.dumps({'text': chunk})}\n\n"
+            await asyncio.sleep(0.015)
+        yield f"event: done\ndata: {json.dumps({'answer': answer})}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@nlp_router.post("/sync/activity")
+async def sync_activity_endpoint(request: Request, sync_req: SyncActivityRequest):
+    nlp_controller = NLPController(
+        vectordb_client=request.app.vectordb_client,
+        generation_client=request.app.generation_client,
+        embedding_client=request.app.embedding_client,
+        template_parser=request.app.template_parser,
+    )
+
+    if sync_req.action == "delete" or not sync_req.is_active:
+        res = nlp_controller.delete_activity(sync_req.activity_id)
+        return JSONResponse(content={"signal": "activity_synced", "action": "deleted", "activity_id": sync_req.activity_id})
+
+    res = nlp_controller.sync_activity(sync_req.dict())
+    return JSONResponse(content={"signal": "activity_synced", "action": "upserted", "activity_id": sync_req.activity_id})
+
+
+@nlp_router.post("/sync/reconcile")
+async def reconcile_activities_endpoint(request: Request):
+    nlp_controller = NLPController(
+        vectordb_client=request.app.vectordb_client,
+        generation_client=request.app.generation_client,
+        embedding_client=request.app.embedding_client,
+        template_parser=request.app.template_parser,
+    )
+
+    activities = []
+    for page in [1, 2]:
+        api_url = f"https://nileguide.runasp.net/api/Activities?Page={page}&PageSize=50"
+        req = urllib.request.Request(api_url, headers={"User-Agent": "Mozilla/5.0"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                items = data.get("data") or data.get("items") or data
+                activities.extend(items)
+        except Exception as e:
+            logger.error(f"Failed to fetch activities page {page}: {e}")
+
+    synced_count = 0
+    for act in activities:
+        try:
+            act_id = act.get("activityID")
+            if not act_id:
+                continue
+            nlp_controller.sync_activity({
+                "activity_id": act_id,
+                "title": act.get("activityName", ""),
+                "city": act.get("cityName", "Egypt"),
+                "category": act.get("categoryName", "General"),
+                "price": f"{act.get('minPrice', act.get('price', 0))} {act.get('priceCurrency', 'USD')}",
+                "description": act.get("description", ""),
+                "image_url": act.get("imageUrl", (act.get("images") or [""])[0] if act.get("images") else ""),
+                "link": f"https://www.nileguide.online/activities/{act_id}",
+                "is_active": True,
+            })
+            synced_count += 1
+        except Exception as e:
+            logger.warning(f"Error syncing activity {act.get('activityID')}: {e}")
+
+    return JSONResponse(content={"signal": "reconcile_success", "total_synced": synced_count})
