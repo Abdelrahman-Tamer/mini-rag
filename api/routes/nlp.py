@@ -156,11 +156,14 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
 
     sources = [
         {
-            "document_name": os.path.basename(doc.metadata.get("source", "")) if doc.metadata and doc.metadata.get("source") else "",
+            "activity_id": doc.metadata.get("activity_id") if doc.metadata else None,
+            "title": doc.metadata.get("title") or (os.path.basename(doc.metadata.get("source", "")) if doc.metadata else ""),
             "city": doc.metadata.get("city") if doc.metadata else None,
-            "doc_type": doc.metadata.get("doc_type") if doc.metadata else None,
+            "category": doc.metadata.get("category") if doc.metadata else None,
+            "price": doc.metadata.get("price") if doc.metadata else None,
+            "image_url": doc.metadata.get("image_url") if doc.metadata else None,
+            "link": doc.metadata.get("link") or (f"https://www.nileguide.online/activities/{doc.metadata.get('activity_id')}" if doc.metadata and doc.metadata.get("activity_id") else None),
             "score": round(doc.score, 4),
-            "excerpt": doc.text[:300],
         }
         for doc in results
     ]
