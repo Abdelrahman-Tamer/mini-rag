@@ -26,6 +26,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.middleware("http")
+async def restore_path_middleware(request: Request, call_next):
+    route = request.query_params.get("_route")
+    if route:
+        while route.startswith("//"):
+            route = route[1:]
+        request.scope["path"] = route
+    return await call_next(request)
+
 async def init_services():
     if getattr(app.state, "initialized", False):
         return True
@@ -106,7 +115,6 @@ app.on_event("shutdown")(shutdown_span)
 
 @app.get("/")
 @app.get("/api")
-@app.get("/api/index.py")
 async def root():
     from helpers.config import get_settings
     settings = get_settings()
@@ -130,14 +138,3 @@ from routes import base, data, nlp
 app.include_router(base.base_router)
 app.include_router(data.data_router)
 app.include_router(nlp.nlp_router)
-
-# Diagnostic catch-all route to inspect paths if any 404 occurs
-@app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE"])
-async def catch_all(request: Request, full_path: str = ""):
-    return {
-        "debug_404_inspector": True,
-        "received_full_path": full_path,
-        "request_url_path": request.url.path,
-        "scope_path": request.scope.get("path"),
-        "headers": dict(request.headers)
-    }
