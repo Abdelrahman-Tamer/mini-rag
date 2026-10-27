@@ -126,11 +126,11 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
 
     if not results:
         fallback_prompt = (
-            "You are a helpful travel assistant. "
-            "No documents were found that match the user's question. "
-            "Politely let the user know you couldn't find specific information about their query, "
-            "and suggest they try asking about a different destination or topic (e.g., cities, attractions, hotels, restaurants, shopping). "
-            "Respond in the same language as the user. Keep it brief and helpful."
+            "You are NileGuide's expert travel assistant for Egypt and world tourism. "
+            "Provide a comprehensive, helpful, and engaging answer to the user's travel question, "
+            "offering top recommendations (such as attractions, activities, culture, food, and insider travel tips). "
+            "Respond in the same language as the user (e.g., English if asked in English, Arabic if asked in Arabic). "
+            "Keep your tone warm, welcoming, and informative."
         )
         answer, full_prompt, _ = nlp_controller.generate_chat_answer(
             query=text,
