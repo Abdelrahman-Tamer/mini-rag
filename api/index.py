@@ -2,7 +2,7 @@ import os
 import sys
 from pathlib import Path
 
-# Add api directory to sys.path so modules like routes, controllers, helpers can be found
+# Add api directory to sys.path
 _current_dir = Path(__file__).resolve().parent
 if str(_current_dir) not in sys.path:
     sys.path.insert(0, str(_current_dir))
@@ -29,8 +29,14 @@ try:
         if getattr(app.state, "initialized", False):
             return
         settings = get_settings()
-        app.mongo_conn = AsyncIOMotorClient(settings.MONGODB_URL)
-        app.db_client = app.mongo_conn[settings.MONGODB_DATABASE]
+
+        if not settings.MONGODB_URL:
+            logger.warning("MONGODB_URL is not set!")
+            app.mongo_conn = None
+            app.db_client = None
+        else:
+            app.mongo_conn = AsyncIOMotorClient(settings.MONGODB_URL)
+            app.db_client = app.mongo_conn[settings.MONGODB_DATABASE]
 
         llm_provider_factory = LLMProviderFactory(settings)
         vectordb_provider_factory = VectorDBProviderFactory(settings)
@@ -45,10 +51,14 @@ try:
                                                 embedding_size=settings.EMBEDDING_MODEL_SIZE)
         
         # vector db client
-        app.vectordb_client = vectordb_provider_factory.create(
-            provider=settings.VECTOR_DB_BACKEND
-        )
-        app.vectordb_client.connect()
+        if not settings.QDRANT_DB_URL:
+            logger.warning("QDRANT_DB_URL is not set!")
+            app.vectordb_client = None
+        else:
+            app.vectordb_client = vectordb_provider_factory.create(
+                provider=settings.VECTOR_DB_BACKEND
+            )
+            app.vectordb_client.connect()
 
         app.template_parser = TemplateParser(
             language=settings.PRIMARY_LANG,
@@ -91,9 +101,15 @@ try:
 
     @app.get("/")
     async def root():
+        settings = get_settings()
         return {
             "status": "ok",
             "service": "NileGuide AI Chatbot API",
+            "config": {
+                "mongodb_configured": bool(settings.MONGODB_URL),
+                "qdrant_configured": bool(settings.QDRANT_DB_URL),
+                "openai_key_configured": bool(settings.OPENAI_API_KEY)
+            },
             "endpoints": {
                 "chat": "/api/v1/nlp/chat",
                 "conversation": "/api/v1/nlp/conversation",

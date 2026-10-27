@@ -14,13 +14,13 @@ class Settings(BaseSettings):
     DEFAULT_CITY: str = "unknown"
     DEFAULT_DOC_TYPE: str = "general"
 
-    MONGODB_URL: str
+    MONGODB_URL: str = ""
     MONGODB_DATABASE: str = "mini-rag"
 
     GENERATION_BACKEND: str = "OPENAI"
     EMBEDDING_BACKEND: str = "OPENAI"
 
-    OPENAI_API_KEY: Optional[str] = None
+    OPENAI_API_KEY: Optional[str] = ""
     OPENAI_API_URL: Optional[str] = "https://generativelanguage.googleapis.com/v1beta/openai/"
     GENERATION_MODEL_ID: Optional[str] = "gemini-3.5-flash-lite"
     EMBEDDING_MODEL_ID: Optional[str] = "gemini-embedding-001"
@@ -30,9 +30,9 @@ class Settings(BaseSettings):
     GENERATION_DEFAULT_TEMPERATURE: Optional[float] = 0.2
 
     VECTOR_DB_BACKEND: str = "QDRANT"
-    QDRANT_DB_URL: str
+    QDRANT_DB_URL: str = ""
     DISTANCE_METHOD: Optional[str] = "cosine"
-    QDRANT_DB_API_KEY: str 
+    QDRANT_DB_API_KEY: str = ""
 
     PRIMARY_LANG: str = "en"
     DEFAULT_LANG: str = "en"
