@@ -745,3 +745,106 @@ def test_redis_outage_does_not_block_admin_unrelated_functions():
 
     res = client.get("/api/v1/data/files", headers={"X-Admin-Api-Key": "invalid-key"})
     assert res.status_code == 401
+
+
+# ==============================================================================
+# SECTION 5 & 6: DISTRIBUTED ASSET LOCKING & DYNAMIC RETRY-AFTER TESTS
+# ==============================================================================
+
+def test_distributed_asset_lock_acquisition_and_release():
+    """Verifies asset_lock acquires lock via Redis set(nx=True) and safely releases via Lua with token."""
+    mock_vectordb = MagicMock()
+    mock_redis = MagicMock()
+    mock_redis.set.return_value = True
+    fake_redis_mod = MagicMock()
+    fake_redis_mod.from_url.return_value = mock_redis
+
+    nlp = NLPController(
+        vectordb_client=mock_vectordb,
+        generation_client=MagicMock(),
+        embedding_client=MagicMock(),
+        template_parser=MagicMock(),
+    )
+    nlp.app_settings = MagicMock()
+    nlp.app_settings.REDIS_URL = "redis://mock-redis:6379"
+    nlp.app_settings.REQUIRE_REDIS_RATE_LIMITER = True
+
+    with patch.dict(sys.modules, {"redis": fake_redis_mod}):
+        with nlp.asset_lock("asset_dist_test", ttl_seconds=30):
+            mock_redis.set.assert_called_once()
+            args, kwargs = mock_redis.set.call_args
+            assert args[0] == "nileguide:lock:asset:asset_dist_test"
+            assert kwargs.get("nx") is True
+            assert kwargs.get("px") == 30000
+
+        mock_redis.eval.assert_called_once()
+        eval_args, _ = mock_redis.eval.call_args
+        assert "redis.call('GET', KEYS[1]) == ARGV[1]" in eval_args[0]
+        assert eval_args[2] == "nileguide:lock:asset:asset_dist_test"
+
+
+def test_distributed_asset_lock_collision_fails():
+    """Verifies that if another worker holds the lock, acquisition raises RuntimeError."""
+    mock_vectordb = MagicMock()
+    mock_redis = MagicMock()
+    mock_redis.set.return_value = False
+    fake_redis_mod = MagicMock()
+    fake_redis_mod.from_url.return_value = mock_redis
+
+    nlp = NLPController(
+        vectordb_client=mock_vectordb,
+        generation_client=MagicMock(),
+        embedding_client=MagicMock(),
+        template_parser=MagicMock(),
+    )
+    nlp.app_settings = MagicMock()
+    nlp.app_settings.REDIS_URL = "redis://mock-redis:6379"
+    nlp.app_settings.REQUIRE_REDIS_RATE_LIMITER = True
+
+    with patch.dict(sys.modules, {"redis": fake_redis_mod}):
+        with pytest.raises(RuntimeError, match="Concurrent indexing conflict: asset 'asset_collision' is locked by another worker"):
+            with nlp.asset_lock("asset_collision", ttl_seconds=30):
+                pass
+
+
+def test_redis_sliding_window_dynamic_retry_after():
+    """Verifies that Retry-After dynamically decreases as elapsed time moves forward in window."""
+    class DynamicRedisStore:
+        def __init__(self):
+            self.zsets = defaultdict(list)
+            self.ttls = {}
+        def eval(self, script, numkeys, key, now, window, max_req, event_id):
+            now_f = float(now)
+            win_f = float(window)
+            max_r = int(max_req)
+            clear_before = now_f - win_f
+            self.zsets[key] = [(s, member) for s, member in self.zsets[key] if s > clear_before]
+            if len(self.zsets[key]) < max_r:
+                self.zsets[key].append((now_f, event_id))
+                self.zsets[key].sort(key=lambda x: x[0])
+                return [1, 0, len(self.zsets[key])]
+            else:
+                oldest_ts = self.zsets[key][0][0]
+                retry_after = max(1, int(oldest_ts + win_f - now_f))
+                return [0, retry_after, len(self.zsets[key])]
+
+    store = DynamicRedisStore()
+    fake_redis_mod = MagicMock()
+    fake_redis_mod.from_url.return_value = store
+    req = make_mock_request(client_ip="198.51.100.1")
+
+    with patch.dict(sys.modules, {"redis": fake_redis_mod}):
+        with patch("time.time", return_value=1000.0):
+            for i in range(15):
+                allowed, retry = check_rate_limit(req, max_requests=15, window_seconds=60, redis_url="redis://localhost", prefix="nileguide:staging:chat")
+                assert allowed is True
+
+        with patch("time.time", return_value=1010.0):
+            allowed, retry_50 = check_rate_limit(req, max_requests=15, window_seconds=60, redis_url="redis://localhost", prefix="nileguide:staging:chat")
+            assert allowed is False
+            assert retry_50 == 50
+
+        with patch("time.time", return_value=1045.0):
+            allowed, retry_15 = check_rate_limit(req, max_requests=15, window_seconds=60, redis_url="redis://localhost", prefix="nileguide:staging:chat")
+            assert allowed is False
+            assert retry_15 == 15

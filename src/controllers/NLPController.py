@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 from .BaseController import BaseController
 from stores.llm.LLMEnums import DocumentTypeEnum
 from helpers.cache import global_response_cache
@@ -32,6 +33,60 @@ class NLPController(BaseController):
             if asset_id not in cls._asset_locks:
                 cls._asset_locks[asset_id] = threading.Lock()
             return cls._asset_locks[asset_id]
+
+    @contextmanager
+    def asset_lock(self, asset_id: str, ttl_seconds: int = 60):
+        """
+        Atomic context manager for asset re-indexing and rollback.
+        Combines process-local thread locking with distributed Redis locking when REDIS_URL is configured.
+        Guarantees:
+        - Atomic acquisition (SET key token NX PX)
+        - Unique ownership via random UUID token
+        - Safe release via atomic Lua script verifying token ownership
+        - Fail-closed behavior under REQUIRE_REDIS_RATE_LIMITER policy
+        """
+        clean_id = str(asset_id).strip()
+        thread_lock = self._get_asset_lock(clean_id)
+        token = str(uuid.uuid4())
+        lock_key = f"nileguide:lock:asset:{clean_id}"
+        redis_client = None
+
+        if hasattr(self, "app_settings") and self.app_settings.REDIS_URL and self.app_settings.REDIS_URL.strip():
+            try:
+                import redis
+                redis_client = redis.from_url(self.app_settings.REDIS_URL, socket_timeout=1.5)
+            except Exception as e:
+                logger.warning(f"Could not connect to Redis for distributed lock, falling back to local lock: {e}")
+                redis_client = None
+
+        thread_lock.acquire()
+        acquired_redis = False
+        try:
+            if redis_client:
+                try:
+                    acquired_redis = bool(redis_client.set(lock_key, token, nx=True, px=ttl_seconds * 1000))
+                    if not acquired_redis:
+                        raise RuntimeError(f"Concurrent indexing conflict: asset '{clean_id}' is locked by another worker.")
+                except Exception as ex:
+                    if hasattr(self, "app_settings") and getattr(self.app_settings, "REQUIRE_REDIS_RATE_LIMITER", False):
+                        raise RuntimeError(f"Distributed locking failed under strict Redis policy: {ex}")
+                    logger.warning(f"Distributed lock acquisition encountered error: {ex}")
+            yield
+        finally:
+            if redis_client and acquired_redis:
+                try:
+                    release_lua = """
+                    if redis.call('GET', KEYS[1]) == ARGV[1] then
+                        return redis.call('DEL', KEYS[1])
+                    else
+                        return 0
+                    end
+                    """
+                    redis_client.eval(release_lua, 1, lock_key, token)
+                except Exception as e:
+                    logger.warning(f"Error releasing distributed Redis lock for {clean_id}: {e}")
+            thread_lock.release()
+
 
     def _deduplicate_search_results(self, documents: list) -> list:
         """
@@ -771,8 +826,7 @@ class NLPController(BaseController):
         clean_target_gen = str(target_generation_id).strip()
         clean_current_gen = str(current_generation_id).strip() if current_generation_id else None
 
-        lock = self._get_asset_lock(clean_asset_id)
-        with lock:
+        with self.asset_lock(clean_asset_id):
             if not self.vectordb_client:
                 return {"status": "vectordb_unavailable", "rolled_back": False}
 
