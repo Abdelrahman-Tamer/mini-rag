@@ -171,6 +171,7 @@ class NLPController(BaseController):
             return None
 
         # 1. Try search with city filter if detected
+        fetch_limit = max(limit * 2, limit + 5)
         results = None
         if target_city and hasattr(self.vectordb_client, "search_by_vector"):
             filter_payload = {"city": target_city}
@@ -179,7 +180,7 @@ class NLPController(BaseController):
             results = self.vectordb_client.search_by_vector(
                 collection_name=self.collection_name,
                 vector=vector,
-                limit=limit,
+                limit=fetch_limit,
                 filter=filter_payload,
             )
 
@@ -188,14 +189,14 @@ class NLPController(BaseController):
             results = self.vectordb_client.search_by_vector(
                 collection_name=self.collection_name,
                 vector=vector,
-                limit=limit,
+                limit=fetch_limit,
             )
 
         if not results:
             return None
 
         results = [doc for doc in results if doc.score >= self.score_threshold]
-        results = self._deduplicate_search_results(results)
+        results = self._deduplicate_search_results(results)[:limit]
         return results if results else None
 
     def generate_chat_answer(self, query: str, retrieved_documents: list, prior_history: list = None, system_prompt: str = None):

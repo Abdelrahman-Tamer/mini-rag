@@ -18,7 +18,7 @@ logger = logging.getLogger("uvicorn.error")
 try:
     from routes import base, data, nlp
     from motor.motor_asyncio import AsyncIOMotorClient
-    from helpers.config import get_settings, validate_admin_security_config
+    from helpers.config import get_settings, validate_admin_security_config, validate_embedding_config
     from stores.llm.LLMProviderFactory import LLMProviderFactory
     from stores.vectordb.VectorDBProviderFactory import VectorDBProviderFactory
     from stores.llm.templates.template_parser import TemplateParser
@@ -30,6 +30,7 @@ try:
             return
         settings = get_settings()
         validate_admin_security_config(settings)
+        validate_embedding_config(settings)
 
         if not settings.MONGODB_URL:
             logger.warning("MONGODB_URL is not set!")

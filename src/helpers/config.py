@@ -102,5 +102,70 @@ def validate_admin_security_config(settings: Settings) -> None:
                     "Use a cryptographically secure random key of at least 16 characters."
                 )
 
+def validate_embedding_config(settings: Settings) -> None:
+    """
+    Validates embedding configuration, backend alignment, and vector dimension compatibility.
+    Fails startup if backend, model, URL, or vector dimensions are mismatched.
+    """
+    backend = (settings.EMBEDDING_BACKEND or "").strip().upper()
+    if backend != "OPENAI":
+        raise ValueError(
+            f"CRITICAL CONFIGURATION ERROR: Unsupported EMBEDDING_BACKEND: '{backend}'. "
+            f"Only 'OPENAI' (including Gemini OpenAI compatibility) is supported."
+        )
+
+    model_id = (settings.EMBEDDING_MODEL_ID or "").strip().lower()
+    model_size = settings.EMBEDDING_MODEL_SIZE
+    api_url = (settings.OPENAI_API_URL or "").strip().lower()
+
+    if not model_id:
+        raise ValueError("CRITICAL CONFIGURATION ERROR: EMBEDDING_MODEL_ID must not be empty.")
+
+    if not model_size or model_size <= 0:
+        raise ValueError(f"CRITICAL CONFIGURATION ERROR: EMBEDDING_MODEL_SIZE must be a positive integer, got {model_size}.")
+
+    # Case A: Google Gemini OpenAI-compatible endpoint
+    if "generativelanguage.googleapis.com" in api_url or "googleapis.com" in api_url:
+        if "gemini" not in model_id and "text-embedding" not in model_id:
+            raise ValueError(
+                f"CRITICAL CONFIGURATION ERROR: Embedding backend mismatch: OPENAI_API_URL targets Google Gemini ({settings.OPENAI_API_URL}), "
+                f"but EMBEDDING_MODEL_ID is set to '{settings.EMBEDDING_MODEL_ID}'. "
+                f"Google Gemini endpoints require Gemini embedding models (e.g., 'gemini-embedding-001' or 'text-embedding-004')."
+            )
+        if "text-embedding-004" in model_id and model_size != 768:
+            raise ValueError(
+                f"CRITICAL CONFIGURATION ERROR: Dimension mismatch: Model '{settings.EMBEDDING_MODEL_ID}' produces 768 dimensions, "
+                f"but EMBEDDING_MODEL_SIZE is configured as {model_size}."
+            )
+        if "gemini-embedding-001" in model_id and (model_size > 3072 or model_size < 128):
+            raise ValueError(
+                f"CRITICAL CONFIGURATION ERROR: Invalid dimension: Model '{settings.EMBEDDING_MODEL_ID}' supports 128 to 3072 dimensions, "
+                f"got EMBEDDING_MODEL_SIZE={model_size}."
+            )
+
+    # Case B: Standard OpenAI endpoint (api.openai.com or omitted)
+    elif "api.openai.com" in api_url or not api_url:
+        if "gemini" in model_id:
+            raise ValueError(
+                f"CRITICAL CONFIGURATION ERROR: Embedding backend mismatch: OPENAI_API_URL targets official OpenAI ({settings.OPENAI_API_URL or 'https://api.openai.com/v1'}), "
+                f"but EMBEDDING_MODEL_ID is set to Google Gemini model '{settings.EMBEDDING_MODEL_ID}'. "
+                f"To use Gemini models, set OPENAI_API_URL='https://generativelanguage.googleapis.com/v1beta/openai/'."
+            )
+        if "text-embedding-3-small" in model_id and model_size > 1536:
+            raise ValueError(
+                f"CRITICAL CONFIGURATION ERROR: Dimension mismatch: Model '{settings.EMBEDDING_MODEL_ID}' has max dimension 1536, "
+                f"but EMBEDDING_MODEL_SIZE is configured as {model_size}."
+            )
+        if "text-embedding-ada-002" in model_id and model_size != 1536:
+            raise ValueError(
+                f"CRITICAL CONFIGURATION ERROR: Dimension mismatch: Model '{settings.EMBEDDING_MODEL_ID}' strictly produces 1536 dimensions, "
+                f"but EMBEDDING_MODEL_SIZE is configured as {model_size}."
+            )
+        if "text-embedding-3-large" in model_id and model_size > 3072:
+            raise ValueError(
+                f"CRITICAL CONFIGURATION ERROR: Dimension mismatch: Model '{settings.EMBEDDING_MODEL_ID}' has max dimension 3072, "
+                f"got EMBEDDING_MODEL_SIZE={model_size}."
+            )
+
 def get_settings():
     return Settings()

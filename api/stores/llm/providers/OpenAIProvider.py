@@ -88,10 +88,23 @@ class OpenAIProvider(LLMInterface):
             self.logger.error("Embedding model for OpenAI was not set")
             return None
         
-        response = self.client.embeddings.create(
-            model = self.embedding_model_id,
-            input = text,
-        )
+        create_kwargs = {
+            "model": self.embedding_model_id,
+            "input": text,
+        }
+        if self.embedding_size and "ada" not in (self.embedding_model_id or "").lower():
+            create_kwargs["dimensions"] = self.embedding_size
+
+        try:
+            response = self.client.embeddings.create(**create_kwargs)
+        except Exception as ex:
+            if "dimensions" in str(ex).lower() and "dimensions" in create_kwargs:
+                self.logger.warning(f"Embedding API rejected 'dimensions' argument; falling back without it: {ex}")
+                create_kwargs.pop("dimensions", None)
+                response = self.client.embeddings.create(**create_kwargs)
+            else:
+                self.logger.error(f"Error calling OpenAI embeddings API: {ex}")
+                return None
 
         if not response or not response.data or len(response.data) == 0 or not response.data[0].embedding:
             self.logger.error("Error while embedding text with OpenAI")

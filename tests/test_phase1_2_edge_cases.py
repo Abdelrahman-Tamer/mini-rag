@@ -446,3 +446,157 @@ def test_chat_endpoint_returns_triple_key_response():
     assert "message" in data_en
     assert "response" in data_en
     assert data_en["answer"] == data_en["response"]
+
+
+# ==============================================================================
+# PHASE 1.2 STAGING READINESS & EMBEDDING/QDRANT CONSISTENCY TESTS
+# ==============================================================================
+
+def test_validate_embedding_config_valid():
+    """Verifies valid embedding configurations pass startup validation."""
+    from helpers.config import Settings, validate_embedding_config
+
+    # Gemini endpoint with gemini-embedding-001 (3072)
+    s1 = Settings(
+        EMBEDDING_BACKEND="OPENAI",
+        OPENAI_API_URL="https://generativelanguage.googleapis.com/v1beta/openai/",
+        EMBEDDING_MODEL_ID="gemini-embedding-001",
+        EMBEDDING_MODEL_SIZE=3072,
+    )
+    validate_embedding_config(s1)
+
+    # Gemini endpoint with text-embedding-004 (768)
+    s2 = Settings(
+        EMBEDDING_BACKEND="OPENAI",
+        OPENAI_API_URL="https://generativelanguage.googleapis.com/v1beta/openai/",
+        EMBEDDING_MODEL_ID="text-embedding-004",
+        EMBEDDING_MODEL_SIZE=768,
+    )
+    validate_embedding_config(s2)
+
+    # OpenAI endpoint with text-embedding-3-small (1536)
+    s3 = Settings(
+        EMBEDDING_BACKEND="OPENAI",
+        OPENAI_API_URL="https://api.openai.com/v1",
+        EMBEDDING_MODEL_ID="text-embedding-3-small",
+        EMBEDDING_MODEL_SIZE=1536,
+    )
+    validate_embedding_config(s3)
+
+
+def test_validate_embedding_config_invalid_mismatches():
+    """Verifies invalid embedding backend, URL, or dimension mismatches raise ValueError."""
+    from helpers.config import Settings, validate_embedding_config
+
+    # Unsupported backend
+    with pytest.raises(ValueError, match="Unsupported EMBEDDING_BACKEND"):
+        validate_embedding_config(Settings(EMBEDDING_BACKEND="HUGGINGFACE"))
+
+    # Gemini endpoint with OpenAI model
+    with pytest.raises(ValueError, match="Embedding backend mismatch"):
+        validate_embedding_config(Settings(
+            EMBEDDING_BACKEND="OPENAI",
+            OPENAI_API_URL="https://generativelanguage.googleapis.com/v1beta/openai/",
+            EMBEDDING_MODEL_ID="davinci",
+            EMBEDDING_MODEL_SIZE=1536,
+        ))
+
+    # Gemini endpoint with text-embedding-004 and incorrect dimension (3072 instead of 768)
+    with pytest.raises(ValueError, match="Dimension mismatch"):
+        validate_embedding_config(Settings(
+            EMBEDDING_BACKEND="OPENAI",
+            OPENAI_API_URL="https://generativelanguage.googleapis.com/v1beta/openai/",
+            EMBEDDING_MODEL_ID="text-embedding-004",
+            EMBEDDING_MODEL_SIZE=3072,
+        ))
+
+    # Official OpenAI endpoint with gemini-embedding-001
+    with pytest.raises(ValueError, match="Embedding backend mismatch"):
+        validate_embedding_config(Settings(
+            EMBEDDING_BACKEND="OPENAI",
+            OPENAI_API_URL="https://api.openai.com/v1",
+            EMBEDDING_MODEL_ID="gemini-embedding-001",
+            EMBEDDING_MODEL_SIZE=3072,
+        ))
+
+    # Official OpenAI endpoint with text-embedding-ada-002 and wrong dimension
+    with pytest.raises(ValueError, match="Dimension mismatch"):
+        validate_embedding_config(Settings(
+            EMBEDDING_BACKEND="OPENAI",
+            OPENAI_API_URL="https://api.openai.com/v1",
+            EMBEDDING_MODEL_ID="text-embedding-ada-002",
+            EMBEDDING_MODEL_SIZE=768,
+        ))
+
+
+def test_nlp_chat_expands_candidate_window_and_deduplicates():
+    """Verifies that chat() retrieves fetch_limit (2x limit) candidates and deduplicates without underfilling."""
+    mock_vectordb = MagicMock()
+    mock_embedding = MagicMock()
+    mock_embedding.embed_text.return_value = [0.1] * 128
+
+    # Create 8 candidates: 2 duplicate pairs and 4 unique items
+    candidates = []
+    # asset_dup has chunk 1 in gen_old and gen_new
+    doc_d1 = MagicMock(score=0.95, metadata={"asset_id": "asset_dup", "chunk_order": 1, "generation_id": "gen_old"})
+    doc_d2 = MagicMock(score=0.90, metadata={"asset_id": "asset_dup", "chunk_order": 1, "generation_id": "gen_new"})
+    candidates.extend([doc_d1, doc_d2])
+    for i in range(2, 8):
+        candidates.append(MagicMock(score=0.80 - (i * 0.05), metadata={"asset_id": f"asset_{i}", "chunk_order": 1, "generation_id": "g1"}))
+
+    mock_vectordb.search_by_vector.return_value = candidates
+
+    nlp = NLPController(
+        vectordb_client=mock_vectordb,
+        generation_client=MagicMock(),
+        embedding_client=mock_embedding,
+        template_parser=MagicMock(),
+    )
+    nlp.score_threshold = 0.2
+
+    # Request limit = 3
+    results = nlp.chat(query="Historical landmarks in Cairo", limit=3)
+
+    # Verify search_by_vector called with expanded window limit (fetch_limit = max(3*2, 3+5) = 8)
+    assert mock_vectordb.search_by_vector.called
+    call_kwargs = mock_vectordb.search_by_vector.call_args[1]
+    assert call_kwargs["limit"] == 8
+
+    # Verify returned results are capped at exactly limit=3 and deduplicated
+    assert len(results) == 3
+    assert results[0].metadata["asset_id"] == "asset_dup"
+    assert results[1].metadata["asset_id"] == "asset_2"
+    assert results[2].metadata["asset_id"] == "asset_3"
+
+
+def test_openai_provider_embed_text_dimensions_and_fallback():
+    """Verifies OpenAIProvider sends dimensions when configured, and falls back gracefully if rejected."""
+    from stores.llm.providers.OpenAIProvider import OpenAIProvider
+
+    provider = OpenAIProvider(api_key="test-key", api_url="https://generativelanguage.googleapis.com/v1beta/openai/")
+    provider.set_embedding_model("gemini-embedding-001", embedding_size=3072)
+
+    mock_client = MagicMock()
+    # Mock normal response
+    mock_resp = MagicMock()
+    mock_resp.data = [MagicMock(embedding=[0.05] * 3072)]
+    mock_client.embeddings.create.return_value = mock_resp
+    provider.client = mock_client
+
+    vec = provider.embed_text("Test sentence")
+    assert vec is not None
+    assert len(vec) == 3072
+    assert mock_client.embeddings.create.call_args[1].get("dimensions") == 3072
+
+    # Test fallback when provider rejects dimensions
+    def create_side_effect(**kwargs):
+        if "dimensions" in kwargs:
+            raise Exception("Invalid parameter 'dimensions' not supported on this endpoint")
+        fallback_resp = MagicMock()
+        fallback_resp.data = [MagicMock(embedding=[0.05] * 768)]
+        return fallback_resp
+
+    mock_client.embeddings.create.side_effect = create_side_effect
+    vec_fallback = provider.embed_text("Test sentence fallback")
+    assert vec_fallback is not None
+    assert len(vec_fallback) == 768
