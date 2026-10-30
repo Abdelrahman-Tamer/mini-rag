@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       commit_sha:
-        description: 'Specific commit SHA to deploy (must be ancestor of approved branch)'
+        description: 'Specific commit SHA to deploy (must be 40-char ancestor of approved branch)'
         required: false
         default: ''
         type: string
@@ -51,17 +51,29 @@ jobs:
             exit 1
           fi
 
+          BRANCH_HEAD_SHA=$(git rev-parse HEAD)
+          echo "Approved branch HEAD SHA: $BRANCH_HEAD_SHA"
+
           TARGET_SHA="${{ inputs.commit_sha }}"
           if [ -n "$TARGET_SHA" ]; then
-            echo "Validating that custom commit SHA $TARGET_SHA belongs to $CURRENT_BRANCH history..."
-            if ! git merge-base --is-ancestor "$TARGET_SHA" HEAD; then
-              echo "CRITICAL SECURITY VIOLATION: Commit SHA $TARGET_SHA is not an ancestor of $CURRENT_BRANCH (HEAD)! Aborting deployment."
+            echo "Evaluating custom commit SHA input: '$TARGET_SHA'"
+            if [[ ! "$TARGET_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+              echo "CRITICAL SECURITY VIOLATION: commit_sha must be a full 40-character hexadecimal SHA. Received: '$TARGET_SHA'"
+              exit 1
+            fi
+            if ! git cat-file -e "${TARGET_SHA}^{commit}" 2>/dev/null; then
+              echo "CRITICAL SECURITY VIOLATION: Commit SHA $TARGET_SHA does not exist in repository object database! Aborting."
+              exit 1
+            fi
+            echo "Validating that custom commit SHA $TARGET_SHA belongs to $CURRENT_BRANCH history ($BRANCH_HEAD_SHA)..."
+            if ! git merge-base --is-ancestor "$TARGET_SHA" "$BRANCH_HEAD_SHA"; then
+              echo "CRITICAL SECURITY VIOLATION: Commit SHA $TARGET_SHA is NOT an ancestor of $CURRENT_BRANCH ($BRANCH_HEAD_SHA)! Aborting deployment."
               exit 1
             fi
             echo "Ancestry verification passed for commit: $TARGET_SHA"
             git checkout "$TARGET_SHA"
           else
-            TARGET_SHA="${{ github.sha }}"
+            TARGET_SHA="$BRANCH_HEAD_SHA"
           fi
           echo "sha=$TARGET_SHA" >> $GITHUB_OUTPUT
           echo "Selected and verified commit SHA: $TARGET_SHA"
@@ -108,56 +120,57 @@ jobs:
           fi
           echo "Target URL safety check passed: $STAGING_URL"
 
+      - name: Dry-Run Guard Simulation Notice
+        if: ${{ inputs.dry_run }}
+        run: |
+          echo "=========================================================="
+          echo "DRY-RUN SIMULATION ACTIVE: Live cloud deployments disabled."
+          echo "Tests passed cleanly. Cloud upload and deploy commands skipped."
+          echo "=========================================================="
+
       - name: Execute Staging Deployment (Vercel)
-        if: ${{ inputs.target_provider == 'vercel' }}
+        if: ${{ inputs.target_provider == 'vercel' && !inputs.dry_run }}
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_STAGING_PROJECT_ID }}
-          DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          if [ "$DRY_RUN" = "true" ] || [ -z "$VERCEL_TOKEN" ]; then
-            echo "[DRY RUN / SIMULATION MODE]"
-            echo "Provider: Vercel Staging"
-            echo "Deployment parameters verified. Cloud upload skipped."
-          else
-            if [ -z "$VERCEL_PROJECT_ID" ]; then
-              echo "CRITICAL CONFIG ERROR: VERCEL_STAGING_PROJECT_ID is not configured in environment secrets! Aborting."
-              exit 1
-            fi
-            if [[ "$VERCEL_PROJECT_ID" =~ "mini-rag-alpha" ]]; then
-              echo "CRITICAL SAFETY VIOLATION: VERCEL_STAGING_PROJECT_ID references production project 'mini-rag-alpha'! Aborting immediately."
-              exit 1
-            fi
-            echo "Deploying mini-rag to Vercel Staging (project ID: $VERCEL_PROJECT_ID)..."
-            npx vercel deploy --prod --token "$VERCEL_TOKEN"
+          if [ -z "$VERCEL_TOKEN" ]; then
+            echo "CRITICAL CONFIG ERROR: VERCEL_TOKEN missing in environment secrets! Aborting."
+            exit 1
           fi
+          if [ -z "$VERCEL_PROJECT_ID" ]; then
+            echo "CRITICAL CONFIG ERROR: VERCEL_STAGING_PROJECT_ID is not configured in environment secrets! Aborting."
+            exit 1
+          fi
+          if [[ "$VERCEL_PROJECT_ID" =~ "mini-rag-alpha" ]]; then
+            echo "CRITICAL SAFETY VIOLATION: VERCEL_STAGING_PROJECT_ID references production project 'mini-rag-alpha'! Aborting immediately."
+            exit 1
+          fi
+          echo "Deploying mini-rag to Vercel Staging (project ID: $VERCEL_PROJECT_ID)..."
+          npx vercel deploy --prod --token "$VERCEL_TOKEN"
 
       - name: Execute Staging Deployment (Docker Container)
-        if: ${{ inputs.target_provider == 'docker_container' }}
+        if: ${{ inputs.target_provider == 'docker_container' && !inputs.dry_run }}
         env:
           REGISTRY: ${{ secrets.CONTAINER_REGISTRY }}
           IMAGE_NAME: nileguide-mini-rag-staging
-          DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          if [ "$DRY_RUN" = "true" ] || [ -z "$REGISTRY" ]; then
-            echo "[DRY RUN / SIMULATION MODE]"
-            echo "Provider: Docker Container Staging"
-            echo "Image: nileguide-mini-rag-staging"
-            echo "Deployment parameters verified. Docker push skipped."
-          else
-            echo "Building and pushing container image..."
-            docker build -t "$REGISTRY/$IMAGE_NAME:${{ needs.validate-and-test.outputs.commit_sha }}" .
-            docker push "$REGISTRY/$IMAGE_NAME:${{ needs.validate-and-test.outputs.commit_sha }}"
+          if [ -z "$REGISTRY" ]; then
+            echo "CRITICAL CONFIG ERROR: CONTAINER_REGISTRY missing in environment secrets! Aborting."
+            exit 1
           fi
+          echo "Building and pushing container image..."
+          docker build -t "$REGISTRY/$IMAGE_NAME:${{ needs.validate-and-test.outputs.commit_sha }}" .
+          docker push "$REGISTRY/$IMAGE_NAME:${{ needs.validate-and-test.outputs.commit_sha }}"
 
       - name: Post-Deployment Smoke Verification
+        if: ${{ !inputs.dry_run }}
         env:
           STAGING_URL: ${{ secrets.STAGING_MINI_RAG_URL || vars.STAGING_MINI_RAG_URL }}
-          DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          if [ "$DRY_RUN" = "true" ] || [ -z "$STAGING_URL" ]; then
-            echo "Skipping live HTTP probe (dry run or staging URL not configured)."
+          if [ -z "$STAGING_URL" ]; then
+            echo "Skipping live HTTP probe (staging URL not configured)."
           else
             echo "Probing staging mini-rag root endpoint: $STAGING_URL/"
             HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "$STAGING_URL/" || echo "000")
