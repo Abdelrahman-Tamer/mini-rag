@@ -848,3 +848,10 @@ def test_redis_sliding_window_dynamic_retry_after():
             allowed, retry_15 = check_rate_limit(req, max_requests=15, window_seconds=60, redis_url="redis://localhost", prefix="nileguide:staging:chat")
             assert allowed is False
             assert retry_15 == 15
+
+
+def test_chat_request_accepts_query_field():
+    """Verify ChatRequest also normalizes 'query' key in addition to text and prompt."""
+    from routes.schemes.nlp import ChatRequest
+    req = ChatRequest(query="Where is the Sphinx?")
+    assert req.text == "Where is the Sphinx?"

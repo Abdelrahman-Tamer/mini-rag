@@ -4,6 +4,7 @@ from typing import Optional
 class ChatRequest(BaseModel):
     text: Optional[str] = None
     prompt: Optional[str] = None
+    query: Optional[str] = None
     limit: Optional[int] = 5
     conversation_id: Optional[str] = None
     city: Optional[str] = None
@@ -13,7 +14,7 @@ class ChatRequest(BaseModel):
     def normalize_text_or_prompt(cls, values):
         if not isinstance(values, dict):
             return values
-        val = values.get("text") or values.get("prompt")
+        val = values.get("text") or values.get("prompt") or values.get("query")
         if val is not None:
             values["text"] = str(val)
         return values
