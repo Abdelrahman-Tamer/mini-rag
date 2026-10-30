@@ -367,3 +367,82 @@ def test_redis_window_expiration_cleans_old_members():
         assert retry_after == 0
         # Old 5 members were purged, only the new 1 member remains
         assert len(store.zsets["chat:192.0.2.4"]) == 1
+
+
+def test_qdrant_cleanup_failure_search_deduplication():
+    """Scenario C: If old generation cleanup fails in Qdrant, search deduplication prevents duplicate chunks."""
+    mock_vectordb = MagicMock()
+    mock_embedding = MagicMock()
+    mock_embedding.embed_text.return_value = [0.1] * 128
+    nlp = NLPController(
+        vectordb_client=mock_vectordb,
+        generation_client=MagicMock(),
+        embedding_client=mock_embedding,
+        template_parser=MagicMock(),
+    )
+    doc_gen1 = MagicMock()
+    doc_gen1.metadata = {"asset_id": "asset_fail_cleanup", "chunk_order": 1, "generation_id": "gen_1"}
+    doc_gen1.score = 0.95
+    doc_gen2 = MagicMock()
+    doc_gen2.metadata = {"asset_id": "asset_fail_cleanup", "chunk_order": 1, "generation_id": "gen_2"}
+    doc_gen2.score = 0.85
+    doc_other = MagicMock()
+    doc_other.metadata = {"asset_id": "asset_other", "chunk_order": 1, "generation_id": "gen_1"}
+    doc_other.score = 0.90
+    raw_results = [doc_gen1, doc_gen2, doc_other]
+    deduped = nlp._deduplicate_search_results(raw_results)
+    assert len(deduped) == 2
+    assert deduped[0].metadata["generation_id"] == "gen_1"
+    assert deduped[1].metadata["asset_id"] == "asset_other"
+
+    # Test safe_reindex_chunks reports cleanup_failed when delete_by_filter raises
+    mock_vectordb.delete_by_filter.side_effect = RuntimeError("Qdrant delete timeout")
+    mock_vectordb.set_payload.return_value = True
+    mock_vectordb.insert_many.return_value = True
+    res = nlp.safe_reindex_chunks(
+        asset_id="asset_fail_cleanup",
+        chunks=[{"text": "chunk 1"}],
+        old_generation_id="gen_old",
+        generation_id="gen_new"
+    )
+    assert res["status"] == "indexed"
+    assert res.get("cleanup_failed") is True
+
+
+def test_qdrant_concurrent_indexing_asset_lock_serializes():
+    """Scenario D: Verifies per-asset lock serializes concurrent indexing jobs for the same asset."""
+    mock_vectordb = MagicMock()
+    nlp = NLPController(
+        vectordb_client=mock_vectordb,
+        generation_client=MagicMock(),
+        embedding_client=MagicMock(),
+        template_parser=MagicMock(),
+    )
+    lock_a1 = nlp._get_asset_lock("asset_alpha")
+    lock_a2 = nlp._get_asset_lock("asset_alpha")
+    lock_b = nlp._get_asset_lock("asset_beta")
+    assert lock_a1 is lock_a2
+    assert lock_a1 is not lock_b
+
+
+def test_chat_endpoint_returns_triple_key_response():
+    """Verifies /api/v1/nlp/chat returns answer, message, and response keys for greeting contract."""
+    from fastapi.testclient import TestClient
+    from main import app
+    client = TestClient(app)
+    # Arabic greeting
+    res_ar = client.post("/api/v1/nlp/chat", json={"prompt": "مرحبا"})
+    assert res_ar.status_code == 200
+    data_ar = res_ar.json()
+    assert "answer" in data_ar
+    assert "message" in data_ar
+    assert "response" in data_ar
+    assert data_ar["answer"] == data_ar["response"]
+    # English greeting
+    res_en = client.post("/api/v1/nlp/chat", json={"prompt": "hello"})
+    assert res_en.status_code == 200
+    data_en = res_en.json()
+    assert "answer" in data_en
+    assert "message" in data_en
+    assert "response" in data_en
+    assert data_en["answer"] == data_en["response"]

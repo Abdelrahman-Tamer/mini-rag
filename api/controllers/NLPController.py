@@ -4,6 +4,7 @@ from helpers.cache import global_response_cache
 import logging
 import uuid
 import os
+import threading
 
 logger = logging.getLogger('uvicorn.error')
 
@@ -22,6 +23,39 @@ CITY_MAP = {
 }
 
 class NLPController(BaseController):
+    _asset_locks = {}
+    _asset_locks_guard = threading.Lock()
+
+    @classmethod
+    def _get_asset_lock(cls, asset_id: str) -> threading.Lock:
+        with cls._asset_locks_guard:
+            if asset_id not in cls._asset_locks:
+                cls._asset_locks[asset_id] = threading.Lock()
+            return cls._asset_locks[asset_id]
+
+    def _deduplicate_search_results(self, documents: list) -> list:
+        """
+        Deduplicates vector search results to prevent duplicate chunks
+        if an old generation cleanup failed in Qdrant (Scenario C).
+        Prefers the first (highest scoring) chunk for any (asset_id, chunk_order).
+        """
+        if not documents:
+            return []
+        seen_keys = set()
+        deduped = []
+        for doc in documents:
+            meta = getattr(doc, "metadata", {}) or {}
+            asset_id = meta.get("asset_id")
+            chunk_order = meta.get("chunk_order")
+            if asset_id and chunk_order is not None:
+                dedup_key = f"{asset_id}:{chunk_order}"
+                if dedup_key in seen_keys:
+                    logger.debug(f"Filtered duplicate chunk from obsolete generation: {dedup_key}")
+                    continue
+                seen_keys.add(dedup_key)
+            deduped.append(doc)
+        return deduped
+
 
     def __init__(self, vectordb_client, generation_client,
                 embedding_client, template_parser):
@@ -161,6 +195,7 @@ class NLPController(BaseController):
             return None
 
         results = [doc for doc in results if doc.score >= self.score_threshold]
+        results = self._deduplicate_search_results(results)
         return results if results else None
 
     def generate_chat_answer(self, query: str, retrieved_documents: list, prior_history: list = None, system_prompt: str = None):
@@ -430,13 +465,32 @@ class NLPController(BaseController):
     ) -> dict:
         """
         Failure-safe recoverable document re-indexing for Qdrant.
-        Supports versioned indexing with generation IDs, atomic promotion,
-        partial batch rollback, and protection against empty extraction erasure.
+        Serializes concurrent indexing per-asset using per-asset lock (Scenario D).
         """
         if not asset_id or not str(asset_id).strip():
             return {"status": "invalid_asset_id", "indexed": 0}
 
         clean_asset_id = str(asset_id).strip()
+
+        with self._get_asset_lock(clean_asset_id):
+            return self._safe_reindex_chunks_locked(
+                clean_asset_id=clean_asset_id,
+                chunks=chunks,
+                old_chunk_count=old_chunk_count,
+                old_generation_id=old_generation_id,
+                generation_id=generation_id,
+                allow_empty=allow_empty
+            )
+
+    def _safe_reindex_chunks_locked(
+        self,
+        clean_asset_id: str,
+        chunks: Optional[list],
+        old_chunk_count: Optional[int] = None,
+        old_generation_id: Optional[str] = None,
+        generation_id: Optional[str] = None,
+        allow_empty: bool = True
+    ) -> dict:
 
         # Protection against malformed/null extraction
         if chunks is None:
@@ -627,13 +681,21 @@ class NLPController(BaseController):
             except Exception as e:
                 logger.warning(f"Could not activate generation {generation_id}: {e}")
 
-        # 5b. Prune previous active generation
+        # 5b. Prune previous active generation with error handling
+        cleanup_failed = False
         if old_generation_id and old_generation_id != generation_id:
             if hasattr(self.vectordb_client, "delete_by_filter"):
-                self.vectordb_client.delete_by_filter(
-                    self.collection_name,
-                    {"asset_id": clean_asset_id, "generation_id": old_generation_id}
-                )
+                try:
+                    del_ok = self.vectordb_client.delete_by_filter(
+                        self.collection_name,
+                        {"asset_id": clean_asset_id, "generation_id": old_generation_id}
+                    )
+                    if del_ok is False:
+                        cleanup_failed = True
+                        logger.warning(f"Cleanup of obsolete generation {old_generation_id} returned False for asset {clean_asset_id}. Search deduplication will prevent duplicate chunk exposure.")
+                except Exception as del_err:
+                    cleanup_failed = True
+                    logger.warning(f"Could not prune obsolete generation {old_generation_id} for asset {clean_asset_id}: {del_err}. Search deduplication will prevent duplicate chunk exposure.")
 
         # 5c. Prune legacy un-versioned points if old_chunk_count > new_count
         if old_chunk_count and old_chunk_count > new_count and not generation_id:
@@ -675,7 +737,7 @@ class NLPController(BaseController):
                 pass
 
         global_response_cache.clear()
-        return {
+        res = {
             "status": "indexed",
             "indexed": new_count,
             "obsolete_pruned": obsolete_pruned,
@@ -683,6 +745,9 @@ class NLPController(BaseController):
             "asset_id": clean_asset_id,
             "promoted": True
         }
+        if cleanup_failed:
+            res["cleanup_failed"] = True
+        return res
 
     def delete_file_vectors(self, asset_id: str) -> dict:
         """

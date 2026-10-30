@@ -144,6 +144,7 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
                 "signal": ResponseSignal.CHAT_SUCCESS.value,
                 "message": answer,
                 "answer": answer,
+                "response": answer,
                 "sources": [],
             }
         )
@@ -208,6 +209,7 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
                 "signal": ResponseSignal.CHAT_SUCCESS.value,
                 "message": answer,
                 "answer": answer,
+                "response": answer,
                 "sources": [],
             }
         )
@@ -266,6 +268,7 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
             "signal": ResponseSignal.CHAT_SUCCESS.value,
             "message": "Here's what I found based on the available documents.",
             "answer": answer,
+            "response": answer,
             "sources": sources,
         }
     )
