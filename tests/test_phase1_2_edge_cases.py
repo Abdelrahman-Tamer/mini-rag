@@ -855,3 +855,112 @@ def test_chat_request_accepts_query_field():
     from routes.schemes.nlp import ChatRequest
     req = ChatRequest(query="Where is the Sphinx?")
     assert req.text == "Where is the Sphinx?"
+
+
+def test_distributed_asset_lock_lost_lock_detection_aborts_promotion():
+    """
+    CRITICAL TTL EXPIRATION SCENARIO:
+    1. Worker A acquires asset lock.
+    2. Long indexing/embedding takes place.
+    3. Lock TTL expires in Redis; Worker B acquires lock with token_B.
+    4. Worker A attempts promotion -> lost-lock detection trips!
+    5. Worker A aborts with status='lock_lost' and rolls back any partial points.
+    6. Worker A release does NOT delete Worker B's lock token.
+    """
+    mock_vectordb = MagicMock()
+    mock_vectordb.insert_many.return_value = True
+
+    mock_embedding = MagicMock()
+    mock_embedding.embed_text.return_value = [0.1] * 128
+
+    # Redis mock that tracks key value
+    redis_store = {}
+    class MockRedisClient:
+        def set(self, key, token, nx=False, px=None):
+            if nx and key in redis_store:
+                return False
+            redis_store[key] = token
+            return True
+
+        def get(self, key):
+            return redis_store.get(key)
+
+        def eval(self, script, numkeys, key, token):
+            # Lua release simulation
+            if redis_store.get(key) == token:
+                del redis_store[key]
+                return 1
+            return 0
+
+    fake_redis_instance = MockRedisClient()
+    fake_redis_mod = MagicMock()
+    fake_redis_mod.from_url.return_value = fake_redis_instance
+
+    nlp = NLPController(
+        vectordb_client=mock_vectordb,
+        generation_client=MagicMock(),
+        embedding_client=mock_embedding,
+        template_parser=MagicMock(),
+    )
+    nlp.app_settings = MagicMock()
+    nlp.app_settings.REDIS_URL = "redis://mock-redis:6379"
+    nlp.app_settings.REQUIRE_REDIS_RATE_LIMITER = True
+
+    with patch.dict(sys.modules, {"redis": fake_redis_mod}):
+        # Acquire lock as Worker A
+        with nlp.asset_lock("asset_expire_test", ttl_seconds=10) as handle_a:
+            assert handle_a.is_valid() is True
+            token_a = handle_a.token
+            assert redis_store["nileguide:lock:asset:asset_expire_test"] == token_a
+
+            # SIMULATE TTL EXPIRY & WORKER B ACQUISITION
+            token_b = "worker-b-token-9999"
+            redis_store["nileguide:lock:asset:asset_expire_test"] = token_b
+
+            # Worker A checks validity -> lost!
+            assert handle_a.is_valid() is False
+
+            # Worker A runs locked re-indexing
+            chunks = [{"text": "chunk 1", "chunk_order": 1}]
+            res = nlp._safe_reindex_chunks_locked(
+                clean_asset_id="asset_expire_test",
+                chunks=chunks,
+                generation_id="gen_a",
+                lock_handle=handle_a
+            )
+
+            # Assert Worker A was aborted before promotion!
+            assert res["status"] == "lock_lost"
+            assert res["rolled_back"] is True
+            # Worker A never promoted or activated gen_a
+            assert not mock_vectordb.set_payload.called
+
+        # Worker A exited context manager: verify Worker B's lock was NOT deleted
+        assert redis_store.get("nileguide:lock:asset:asset_expire_test") == token_b
+
+
+def test_safe_reindex_chunks_uses_distributed_lock_integration():
+    """Verifies safe_reindex_chunks wraps execution with asset_lock and enforces lock collision."""
+    mock_vectordb = MagicMock()
+    mock_redis = MagicMock()
+    # Simulate another worker already holds lock
+    mock_redis.set.return_value = False
+    fake_redis_mod = MagicMock()
+    fake_redis_mod.from_url.return_value = mock_redis
+
+    nlp = NLPController(
+        vectordb_client=mock_vectordb,
+        generation_client=MagicMock(),
+        embedding_client=MagicMock(),
+        template_parser=MagicMock(),
+    )
+    nlp.app_settings = MagicMock()
+    nlp.app_settings.REDIS_URL = "redis://mock-redis:6379"
+    nlp.app_settings.REQUIRE_REDIS_RATE_LIMITER = True
+
+    with patch.dict(sys.modules, {"redis": fake_redis_mod}):
+        with pytest.raises(RuntimeError, match="Concurrent indexing conflict"):
+            nlp.safe_reindex_chunks(
+                asset_id="asset_locked_by_other",
+                chunks=[{"text": "chunk 1"}]
+            )

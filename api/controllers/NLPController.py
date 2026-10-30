@@ -71,7 +71,26 @@ class NLPController(BaseController):
                     if hasattr(self, "app_settings") and getattr(self.app_settings, "REQUIRE_REDIS_RATE_LIMITER", False):
                         raise RuntimeError(f"Distributed locking failed under strict Redis policy: {ex}")
                     logger.warning(f"Distributed lock acquisition encountered error: {ex}")
-            yield
+
+            def check_lock_valid() -> bool:
+                if not redis_client or not acquired_redis:
+                    return True
+                try:
+                    val = redis_client.get(lock_key)
+                    if isinstance(val, bytes):
+                        val = val.decode("utf-8")
+                    return str(val) == token
+                except Exception:
+                    return False
+
+            class LockHandle:
+                def __init__(self, tok, validator):
+                    self.token = tok
+                    self._validator = validator
+                def is_valid(self) -> bool:
+                    return self._validator()
+
+            yield LockHandle(token, check_lock_valid)
         finally:
             if redis_client and acquired_redis:
                 try:
@@ -528,14 +547,15 @@ class NLPController(BaseController):
 
         clean_asset_id = str(asset_id).strip()
 
-        with self._get_asset_lock(clean_asset_id):
+        with self.asset_lock(clean_asset_id) as lock_handle:
             return self._safe_reindex_chunks_locked(
                 clean_asset_id=clean_asset_id,
                 chunks=chunks,
                 old_chunk_count=old_chunk_count,
                 old_generation_id=old_generation_id,
                 generation_id=generation_id,
-                allow_empty=allow_empty
+                allow_empty=allow_empty,
+                lock_handle=lock_handle
             )
 
     def _safe_reindex_chunks_locked(
@@ -545,7 +565,8 @@ class NLPController(BaseController):
         old_chunk_count: Optional[int] = None,
         old_generation_id: Optional[str] = None,
         generation_id: Optional[str] = None,
-        allow_empty: bool = True
+        allow_empty: bool = True,
+        lock_handle = None
     ) -> dict:
 
         # Protection against malformed/null extraction
@@ -722,6 +743,19 @@ class NLPController(BaseController):
                 "error": write_error or "Batch insertion failure"
             }
 
+        # Check lost-lock before Step 5 promotion
+        if lock_handle and not lock_handle.is_valid():
+            logger.error(f"Lost asset lock ownership for '{clean_asset_id}' before promotion! Lease expired or superseded. Rolling back partial writes.")
+            if inserted_point_ids and hasattr(self.vectordb_client, "delete_by_ids"):
+                self.vectordb_client.delete_by_ids(self.collection_name, inserted_point_ids)
+            return {
+                "status": "lock_lost",
+                "indexed": 0,
+                "generation_id": generation_id,
+                "rolled_back": True,
+                "error": "Asset lock lease expired during processing. Changes rolled back to prevent split-brain vector corruption."
+            }
+
         # Step 5: Promotion & obsolete cleanup
         obsolete_pruned = 0
         new_count = len(texts)
@@ -881,10 +915,9 @@ class NLPController(BaseController):
             return {"status": "invalid_asset_id", "pruned": 0}
 
         clean_asset_id = str(asset_id).strip()
-        lock = self._get_asset_lock(clean_asset_id)
         pruned_count = 0
 
-        with lock:
+        with self.asset_lock(clean_asset_id):
             if not self.vectordb_client:
                 return {"status": "vectordb_unavailable", "pruned": 0}
 

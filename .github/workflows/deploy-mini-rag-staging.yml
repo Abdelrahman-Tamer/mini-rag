@@ -4,14 +4,14 @@ on:
   workflow_dispatch:
     inputs:
       commit_sha:
-        description: 'Specific commit SHA to deploy (defaults to latest on branch)'
+        description: 'Specific commit SHA to deploy (must be ancestor of approved branch)'
         required: false
         default: ''
         type: string
       dry_run:
-        description: 'Perform dry-run validation only (no cloud upload)'
+        description: 'Perform dry-run validation only (default: true for safety)'
         required: false
-        default: false
+        default: true
         type: boolean
       target_provider:
         description: 'Target staging provider'
@@ -36,23 +36,38 @@ jobs:
     outputs:
       commit_sha: ${{ steps.resolve_commit.outputs.sha }}
     steps:
-      - name: Resolve Commit SHA
+      - name: Checkout Codebase (Full History for Ancestry Verification)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Enforce Branch Restrictions and Verify Commit Ancestry
         id: resolve_commit
         run: |
+          CURRENT_BRANCH="${GITHUB_REF#refs/heads/}"
+          echo "Evaluating branch restriction for: $CURRENT_BRANCH"
+          if [[ "$CURRENT_BRANCH" != "fix/phase-1.1-staging-hardening" ]] && [[ ! "$CURRENT_BRANCH" =~ ^release/ ]]; then
+            echo "CRITICAL SECURITY VIOLATION: Staging deployment is restricted to 'fix/phase-1.1-staging-hardening' or 'release/*'. Current branch: $CURRENT_BRANCH"
+            exit 1
+          fi
+
           TARGET_SHA="${{ inputs.commit_sha }}"
-          if [ -z "$TARGET_SHA" ]; then
+          if [ -n "$TARGET_SHA" ]; then
+            echo "Validating that custom commit SHA $TARGET_SHA belongs to $CURRENT_BRANCH history..."
+            if ! git merge-base --is-ancestor "$TARGET_SHA" HEAD; then
+              echo "CRITICAL SECURITY VIOLATION: Commit SHA $TARGET_SHA is not an ancestor of $CURRENT_BRANCH (HEAD)! Aborting deployment."
+              exit 1
+            fi
+            echo "Ancestry verification passed for commit: $TARGET_SHA"
+            git checkout "$TARGET_SHA"
+          else
             TARGET_SHA="${{ github.sha }}"
           fi
           echo "sha=$TARGET_SHA" >> $GITHUB_OUTPUT
-          echo "Selected commit SHA: $TARGET_SHA"
-
-      - name: Checkout Codebase
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ steps.resolve_commit.outputs.sha }}
+          echo "Selected and verified commit SHA: $TARGET_SHA"
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@0a5c61591373683505ea898e09a3ea4f39ef2b9c # v5.3.0
         with:
           python-version: '3.11'
           cache: 'pip'
@@ -72,7 +87,7 @@ jobs:
     environment: staging
     steps:
       - name: Checkout Codebase
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ needs.validate-and-test.outputs.commit_sha }}
 
@@ -84,6 +99,11 @@ jobs:
           # Guard against production endpoint overwrite
           if [[ "$STAGING_URL" =~ "mini-rag-alpha.vercel.app" ]] || [[ "$STAGING_URL" =~ "nileguide.runasp.net" ]]; then
             echo "CRITICAL SAFETY VIOLATION: Staging URL points to production! Aborting immediately."
+            exit 1
+          fi
+          # Guard against placeholder domains
+          if [[ "$STAGING_URL" =~ "example.com" ]]; then
+            echo "CRITICAL CONFIG ERROR: Staging mini-rag URL is an unconfigured placeholder (*.example.com)! Aborting immediately."
             exit 1
           fi
           echo "Target URL safety check passed: $STAGING_URL"
@@ -101,7 +121,15 @@ jobs:
             echo "Provider: Vercel Staging"
             echo "Deployment parameters verified. Cloud upload skipped."
           else
-            echo "Deploying mini-rag to Vercel Staging..."
+            if [ -z "$VERCEL_PROJECT_ID" ]; then
+              echo "CRITICAL CONFIG ERROR: VERCEL_STAGING_PROJECT_ID is not configured in environment secrets! Aborting."
+              exit 1
+            fi
+            if [[ "$VERCEL_PROJECT_ID" =~ "mini-rag-alpha" ]]; then
+              echo "CRITICAL SAFETY VIOLATION: VERCEL_STAGING_PROJECT_ID references production project 'mini-rag-alpha'! Aborting immediately."
+              exit 1
+            fi
+            echo "Deploying mini-rag to Vercel Staging (project ID: $VERCEL_PROJECT_ID)..."
             npx vercel deploy --prod --token "$VERCEL_TOKEN"
           fi
 
