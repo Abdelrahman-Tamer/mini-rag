@@ -67,17 +67,29 @@ async def list_conversations(request: Request, ids: str = Query("")):
 async def chat_endpoint(request: Request, chat_request: ChatRequest):
     app_settings = get_settings()
 
-    # Rate limiting abuse protection
-    is_allowed, retry_after = check_rate_limit(
-        request=request,
-        max_requests=app_settings.RATE_LIMIT_CHAT_REQUESTS,
-        window_seconds=app_settings.RATE_LIMIT_CHAT_WINDOW_SECONDS,
-        trusted_proxies=app_settings.TRUSTED_PROXIES,
-        trusted_cloudflare_proxies=getattr(app_settings, "TRUSTED_CLOUDFLARE_PROXIES", None),
-        redis_url=app_settings.REDIS_URL,
-        require_redis=getattr(app_settings, "REQUIRE_REDIS_RATE_LIMITER", False),
-        prefix="chat"
-    )
+    # Rate limiting abuse protection (Fail-Closed under require_redis)
+    try:
+        is_allowed, retry_after = check_rate_limit(
+            request=request,
+            max_requests=app_settings.RATE_LIMIT_CHAT_REQUESTS,
+            window_seconds=app_settings.RATE_LIMIT_CHAT_WINDOW_SECONDS,
+            trusted_proxies=app_settings.TRUSTED_PROXIES,
+            trusted_cloudflare_proxies=getattr(app_settings, "TRUSTED_CLOUDFLARE_PROXIES", None),
+            redis_url=app_settings.REDIS_URL,
+            require_redis=getattr(app_settings, "REQUIRE_REDIS_RATE_LIMITER", False),
+            prefix="chat"
+        )
+    except RuntimeError as r_err:
+        logger.critical(f"Distributed rate limiter unavailable under fail-closed policy: {r_err}")
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "signal": "service_temporarily_unavailable",
+                "message": "Chat service is temporarily unavailable due to rate limiter connectivity. Please try again shortly.",
+                "detail": "Distributed rate limiting cluster unavailable (fail-closed security policy enforced)."
+            },
+            headers={"Retry-After": "30"}
+        )
     if not is_allowed:
         return JSONResponse(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,

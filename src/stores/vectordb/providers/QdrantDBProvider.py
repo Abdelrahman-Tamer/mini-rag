@@ -263,17 +263,29 @@ class QdrantDBProvider(VectorDBInterface):
             self.logger.error(f"Error during delete_by_ids: {e}")
             return False
 
-    def set_payload(self, collection_name: str, payload: dict, record_ids: list = None) -> bool:
-        if not self.is_collection_existed(collection_name) or not record_ids:
+    def set_payload(self, collection_name: str, payload: dict, record_ids: list = None, filter: dict = None) -> bool:
+        if not self.is_collection_existed(collection_name):
             return False
-        point_ids = [int(rid) if str(rid).isdigit() else str(rid) for rid in record_ids]
         try:
-            self.client.set_payload(
-                collection_name=collection_name,
-                payload=payload,
-                points=point_ids
-            )
-            return True
+            if filter:
+                query_filter = self._build_filter(filter)
+                if not query_filter:
+                    return False
+                self.client.set_payload(
+                    collection_name=collection_name,
+                    payload=payload,
+                    points=models.FilterSelector(filter=query_filter)
+                )
+                return True
+            elif record_ids:
+                point_ids = [int(rid) if str(rid).isdigit() else str(rid) for rid in record_ids]
+                self.client.set_payload(
+                    collection_name=collection_name,
+                    payload=payload,
+                    points=point_ids
+                )
+                return True
+            return False
         except Exception as e:
             self.logger.error(f"Error during set_payload: {e}")
             return False

@@ -106,13 +106,9 @@ def test_qdrant_process_restarts_and_retry_succeeds():
     assert res["status"] == "indexed"
     assert res["indexed"] == 59
     assert res["promoted"] is True
-    # set_payload activated new generation
-    mock_vectordb.set_payload.assert_called_once()
-    # Old generation is deleted after promotion
-    mock_vectordb.delete_by_filter.assert_any_call(
-        nlp.collection_name,
-        {"asset_id": "asset_retry", "generation_id": "gen_old_v1"}
-    )
+    # set_payload activated new generation and retained previous generation for rollback
+    assert mock_vectordb.set_payload.call_count >= 2
+    assert res.get("retained_generation_id") == "gen_old_v1"
 
 
 def test_qdrant_previous_active_version_remains_searchable_until_promotion():
@@ -395,9 +391,8 @@ def test_qdrant_cleanup_failure_search_deduplication():
     assert deduped[0].metadata["generation_id"] == "gen_1"
     assert deduped[1].metadata["asset_id"] == "asset_other"
 
-    # Test safe_reindex_chunks reports cleanup_failed when delete_by_filter raises
-    mock_vectordb.delete_by_filter.side_effect = RuntimeError("Qdrant delete timeout")
-    mock_vectordb.set_payload.return_value = True
+    # Test safe_reindex_chunks reports cleanup_failed when retention marking fails
+    mock_vectordb.set_payload.side_effect = [True, RuntimeError("Qdrant retention error")]
     mock_vectordb.insert_many.return_value = True
     res = nlp.safe_reindex_chunks(
         asset_id="asset_fail_cleanup",
@@ -600,3 +595,153 @@ def test_openai_provider_embed_text_dimensions_and_fallback():
     vec_fallback = provider.embed_text("Test sentence fallback")
     assert vec_fallback is not None
     assert len(vec_fallback) == 768
+
+
+# ==============================================================================
+# TASK 2 & 3: QDRANT ROLLBACK RETENTION & REDIS FAIL-CLOSED RECOVERY TESTS
+# ==============================================================================
+
+def test_qdrant_rollback_retention_preserves_previous_generation():
+    """Verifies that indexing gen_2 activates gen_2 and retains gen_1 for rollback instead of deleting it."""
+    mock_vectordb = MagicMock()
+    mock_vectordb.insert_many.return_value = True
+    mock_vectordb.set_payload.return_value = True
+    mock_embedding = MagicMock()
+    mock_embedding.embed_text.return_value = [0.1] * 128
+
+    nlp = NLPController(
+        vectordb_client=mock_vectordb,
+        generation_client=MagicMock(),
+        embedding_client=mock_embedding,
+        template_parser=MagicMock(),
+    )
+
+    res = nlp.safe_reindex_chunks(
+        asset_id="asset_retention_test",
+        chunks=[{"text": "chunk 1 gen 2"}],
+        old_generation_id="gen_1",
+        generation_id="gen_2"
+    )
+
+    assert res["status"] == "indexed"
+    assert res["promoted"] is True
+    assert res.get("retained_generation_id") == "gen_1"
+
+    # Verify delete_by_filter was NOT called to delete gen_1
+    delete_calls = mock_vectordb.delete_by_filter.call_args_list
+    for call in delete_calls:
+        flt = call[1].get("filter") or (call[0][1] if len(call[0]) > 1 else {})
+        assert flt.get("generation_id") != "gen_1", "gen_1 should be retained, not deleted!"
+
+    # Verify set_payload was called to mark gen_1 as rollback_retained: True
+    payload_calls = mock_vectordb.set_payload.call_args_list
+    gen1_retained = False
+    for call in payload_calls:
+        kwargs = call[1] if call[1] else {}
+        flt = kwargs.get("filter", {})
+        payload = kwargs.get("payload", {})
+        if flt.get("generation_id") == "gen_1":
+            meta = payload.get("metadata", {})
+            if meta.get("is_active") is False and meta.get("rollback_retained") is True:
+                gen1_retained = True
+    assert gen1_retained, "Previous generation gen_1 must be marked with is_active=False and rollback_retained=True"
+
+
+def test_qdrant_rollback_asset_generation_reactivates_previous_generation():
+    """Verifies rollback_asset_generation deactivates current generation and activates target rollback generation."""
+    mock_vectordb = MagicMock()
+    mock_vectordb.set_payload.return_value = True
+
+    nlp = NLPController(
+        vectordb_client=mock_vectordb,
+        generation_client=MagicMock(),
+        embedding_client=MagicMock(),
+        template_parser=MagicMock(),
+    )
+
+    res = nlp.rollback_asset_generation(
+        asset_id="asset_rollback_test",
+        target_generation_id="gen_1",
+        current_generation_id="gen_2"
+    )
+
+    assert res["status"] == "rolled_back"
+    assert res["rolled_back"] is True
+    assert res["target_generation_id"] == "gen_1"
+    assert res["deactivated_generation_id"] == "gen_2"
+
+    payload_calls = mock_vectordb.set_payload.call_args_list
+    assert len(payload_calls) >= 2
+
+    gen2_deactivated = False
+    gen1_activated = False
+    for call in payload_calls:
+        flt = call[1].get("filter", {})
+        meta = call[1].get("payload", {}).get("metadata", {})
+        if flt.get("generation_id") == "gen_2" and meta.get("is_active") is False:
+            gen2_deactivated = True
+        if flt.get("generation_id") == "gen_1" and meta.get("is_active") is True:
+            gen1_activated = True
+
+    assert gen2_deactivated, "Current generation gen_2 must be deactivated"
+    assert gen1_activated, "Target generation gen_1 must be reactivated"
+
+
+def test_qdrant_prune_expired_generations():
+    """Verifies prune_expired_generations deletes only explicitly targeted obsolete generations."""
+    mock_vectordb = MagicMock()
+    mock_vectordb.delete_by_filter.return_value = True
+
+    nlp = NLPController(
+        vectordb_client=mock_vectordb,
+        generation_client=MagicMock(),
+        embedding_client=MagicMock(),
+        template_parser=MagicMock(),
+    )
+
+    res = nlp.prune_expired_generations(
+        asset_id="asset_prune_test",
+        generation_ids_to_prune=["gen_expired_0"]
+    )
+
+    assert res["status"] == "pruned"
+    assert res["pruned_generations"] == 1
+    mock_vectordb.delete_by_filter.assert_called_with(
+        nlp.collection_name,
+        {"asset_id": "asset_prune_test", "generation_id": "gen_expired_0"}
+    )
+
+
+def test_redis_fail_closed_returns_503_on_rate_limiter_outage():
+    """Verifies /api/v1/nlp/chat returns HTTP 503 with Retry-After when Redis fails under require_redis policy."""
+    from fastapi.testclient import TestClient
+    from main import app
+
+    client = TestClient(app)
+
+    with patch("routes.nlp.get_settings") as mock_settings,          patch("routes.nlp.check_rate_limit", side_effect=RuntimeError("Redis connection refused")):
+        s = MagicMock()
+        s.RATE_LIMIT_CHAT_REQUESTS = 15
+        s.RATE_LIMIT_CHAT_WINDOW_SECONDS = 60
+        s.TRUSTED_PROXIES = ["127.0.0.1"]
+        s.TRUSTED_CLOUDFLARE_PROXIES = ["127.0.0.1"]
+        s.REDIS_URL = "redis://invalid-host:6379"
+        s.REQUIRE_REDIS_RATE_LIMITER = True
+        mock_settings.return_value = s
+
+        res = client.post("/api/v1/nlp/chat", json={"prompt": "مرحبا"})
+        assert res.status_code == 503
+        data = res.json()
+        assert data.get("signal") == "service_temporarily_unavailable"
+        assert res.headers.get("Retry-After") == "30"
+
+
+def test_redis_outage_does_not_block_admin_unrelated_functions():
+    """Verifies that an outage in Redis does NOT prevent admin knowledge-base operations."""
+    from fastapi.testclient import TestClient
+    from main import app
+
+    client = TestClient(app)
+
+    res = client.get("/api/v1/data/files", headers={"X-Admin-Api-Key": "invalid-key"})
+    assert res.status_code == 401

@@ -682,21 +682,26 @@ class NLPController(BaseController):
             except Exception as e:
                 logger.warning(f"Could not activate generation {generation_id}: {e}")
 
-        # 5b. Prune previous active generation with error handling
+        # 5b. Retain previous active generation for rollback (Rollback Retention Policy)
         cleanup_failed = False
+        retained_generation_id = None
         if old_generation_id and old_generation_id != generation_id:
-            if hasattr(self.vectordb_client, "delete_by_filter"):
+            if hasattr(self.vectordb_client, "set_payload"):
                 try:
-                    del_ok = self.vectordb_client.delete_by_filter(
-                        self.collection_name,
-                        {"asset_id": clean_asset_id, "generation_id": old_generation_id}
+                    set_ok = self.vectordb_client.set_payload(
+                        collection_name=self.collection_name,
+                        payload={"metadata": {"is_active": False, "rollback_retained": True, "status": "retained_for_rollback"}},
+                        filter={"asset_id": clean_asset_id, "generation_id": old_generation_id}
                     )
-                    if del_ok is False:
+                    if set_ok:
+                        retained_generation_id = old_generation_id
+                        logger.info(f"Retained previous generation '{old_generation_id}' for rollback on asset '{clean_asset_id}'.")
+                    else:
                         cleanup_failed = True
-                        logger.warning(f"Cleanup of obsolete generation {old_generation_id} returned False for asset {clean_asset_id}. Search deduplication will prevent duplicate chunk exposure.")
-                except Exception as del_err:
+                        logger.warning(f"Could not mark old generation {old_generation_id} as rollback-retained.")
+                except Exception as ret_err:
                     cleanup_failed = True
-                    logger.warning(f"Could not prune obsolete generation {old_generation_id} for asset {clean_asset_id}: {del_err}. Search deduplication will prevent duplicate chunk exposure.")
+                    logger.warning(f"Could not mark old generation {old_generation_id} as rollback-retained for asset {clean_asset_id}: {ret_err}.")
 
         # 5c. Prune legacy un-versioned points if old_chunk_count > new_count
         if old_chunk_count and old_chunk_count > new_count and not generation_id:
@@ -727,12 +732,12 @@ class NLPController(BaseController):
             if hasattr(self.vectordb_client, "delete_by_ids"):
                 self.vectordb_client.delete_by_ids(self.collection_name, legacy_ids)
 
-        # 5e. Garbage collect orphaned inactive generations
+        # 5e. Garbage collect explicitly obsolete generations (preserves active & rollback-retained)
         if hasattr(self.vectordb_client, "delete_by_filter"):
             try:
                 self.vectordb_client.delete_by_filter(
                     self.collection_name,
-                    {"asset_id": clean_asset_id, "is_active": False}
+                    {"asset_id": clean_asset_id, "status": "obsolete"}
                 )
             except Exception:
                 pass
@@ -743,12 +748,120 @@ class NLPController(BaseController):
             "indexed": new_count,
             "obsolete_pruned": obsolete_pruned,
             "generation_id": generation_id,
+            "retained_generation_id": retained_generation_id,
             "asset_id": clean_asset_id,
             "promoted": True
         }
         if cleanup_failed:
             res["cleanup_failed"] = True
         return res
+
+    def rollback_asset_generation(self, asset_id: str, target_generation_id: str, current_generation_id: str = None) -> dict:
+        """
+        Safely rolls back an asset's active generation to target_generation_id.
+        Deactivates the current active generation and reactivates the target rollback generation.
+        Guaranteed serial execution under per-asset concurrency locking.
+        """
+        if not asset_id or not str(asset_id).strip():
+            return {"status": "invalid_asset_id", "rolled_back": False}
+        if not target_generation_id or not str(target_generation_id).strip():
+            return {"status": "invalid_target_generation_id", "rolled_back": False}
+
+        clean_asset_id = str(asset_id).strip()
+        clean_target_gen = str(target_generation_id).strip()
+        clean_current_gen = str(current_generation_id).strip() if current_generation_id else None
+
+        lock = self._get_asset_lock(clean_asset_id)
+        with lock:
+            if not self.vectordb_client:
+                return {"status": "vectordb_unavailable", "rolled_back": False}
+
+            # Step 1: Deactivate current active generation
+            if clean_current_gen and hasattr(self.vectordb_client, "set_payload"):
+                try:
+                    self.vectordb_client.set_payload(
+                        collection_name=self.collection_name,
+                        payload={"metadata": {"is_active": False, "rollback_retained": False, "status": "rolled_back"}},
+                        filter={"asset_id": clean_asset_id, "generation_id": clean_current_gen}
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not deactivate current generation {clean_current_gen}: {e}")
+            elif hasattr(self.vectordb_client, "set_payload"):
+                try:
+                    self.vectordb_client.set_payload(
+                        collection_name=self.collection_name,
+                        payload={"metadata": {"is_active": False, "status": "rolled_back"}},
+                        filter={"asset_id": clean_asset_id, "is_active": True}
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not deactivate existing active generation: {e}")
+
+            # Step 2: Reactivate target generation
+            reactivated = False
+            if hasattr(self.vectordb_client, "set_payload"):
+                try:
+                    reactivated = self.vectordb_client.set_payload(
+                        collection_name=self.collection_name,
+                        payload={"metadata": {"is_active": True, "rollback_retained": False, "status": "active"}},
+                        filter={"asset_id": clean_asset_id, "generation_id": clean_target_gen}
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to reactivate target generation {clean_target_gen}: {e}")
+                    return {"status": "rollback_failed", "error": str(e), "rolled_back": False}
+
+            global_response_cache.clear()
+            return {
+                "status": "rolled_back" if reactivated else "reactivation_failed",
+                "asset_id": clean_asset_id,
+                "target_generation_id": clean_target_gen,
+                "deactivated_generation_id": clean_current_gen,
+                "rolled_back": bool(reactivated)
+            }
+
+    def prune_expired_generations(self, asset_id: str, generation_ids_to_prune: list = None) -> dict:
+        """
+        Safely prunes expired or obsolete generations for an asset while preserving the active
+        and designated rollback-retained generations.
+        """
+        if not asset_id or not str(asset_id).strip():
+            return {"status": "invalid_asset_id", "pruned": 0}
+
+        clean_asset_id = str(asset_id).strip()
+        lock = self._get_asset_lock(clean_asset_id)
+        pruned_count = 0
+
+        with lock:
+            if not self.vectordb_client:
+                return {"status": "vectordb_unavailable", "pruned": 0}
+
+            if generation_ids_to_prune:
+                for gid in generation_ids_to_prune:
+                    if gid and hasattr(self.vectordb_client, "delete_by_filter"):
+                        try:
+                            ok = self.vectordb_client.delete_by_filter(
+                                self.collection_name,
+                                {"asset_id": clean_asset_id, "generation_id": str(gid).strip()}
+                            )
+                            if ok:
+                                pruned_count += 1
+                        except Exception as e:
+                            logger.warning(f"Could not prune generation {gid}: {e}")
+            elif hasattr(self.vectordb_client, "delete_by_filter"):
+                try:
+                    ok = self.vectordb_client.delete_by_filter(
+                        self.collection_name,
+                        {"asset_id": clean_asset_id, "status": "obsolete"}
+                    )
+                    if ok:
+                        pruned_count += 1
+                except Exception:
+                    pass
+
+            return {
+                "status": "pruned",
+                "asset_id": clean_asset_id,
+                "pruned_generations": pruned_count
+            }
 
     def delete_file_vectors(self, asset_id: str) -> dict:
         """
