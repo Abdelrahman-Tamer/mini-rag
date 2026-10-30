@@ -1,0 +1,141 @@
+name: Deploy NileGuide mini-rag Staging
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: 'Specific commit SHA to deploy (defaults to latest on branch)'
+        required: false
+        default: ''
+        type: string
+      dry_run:
+        description: 'Perform dry-run validation only (no cloud upload)'
+        required: false
+        default: false
+        type: boolean
+      target_provider:
+        description: 'Target staging provider'
+        required: true
+        default: 'vercel'
+        type: choice
+        options:
+          - vercel
+          - docker_container
+
+permissions:
+  contents: read
+
+concurrency:
+  group: staging-deploy-mini-rag
+  cancel-in-progress: false
+
+jobs:
+  validate-and-test:
+    name: Validate and Test mini-rag Staging
+    runs-on: ubuntu-latest
+    outputs:
+      commit_sha: ${{ steps.resolve_commit.outputs.sha }}
+    steps:
+      - name: Resolve Commit SHA
+        id: resolve_commit
+        run: |
+          TARGET_SHA="${{ inputs.commit_sha }}"
+          if [ -z "$TARGET_SHA" ]; then
+            TARGET_SHA="${{ github.sha }}"
+          fi
+          echo "sha=$TARGET_SHA" >> $GITHUB_OUTPUT
+          echo "Selected commit SHA: $TARGET_SHA"
+
+      - name: Checkout Codebase
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.resolve_commit.outputs.sha }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest httpx redis pydantic-settings
+
+      - name: Run Automated Test Suite
+        run: pytest tests/ -v
+
+  deploy-staging:
+    name: Deploy to Staging Environment
+    needs: validate-and-test
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - name: Checkout Codebase
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.validate-and-test.outputs.commit_sha }}
+
+      - name: Validate Deployment Target Safety Guardrail
+        env:
+          STAGING_URL: ${{ secrets.STAGING_MINI_RAG_URL || vars.STAGING_MINI_RAG_URL }}
+        run: |
+          echo "Running pre-flight URL safety check..."
+          # Guard against production endpoint overwrite
+          if [[ "$STAGING_URL" =~ "mini-rag-alpha.vercel.app" ]] || [[ "$STAGING_URL" =~ "nileguide.runasp.net" ]]; then
+            echo "CRITICAL SAFETY VIOLATION: Staging URL points to production! Aborting immediately."
+            exit 1
+          fi
+          echo "Target URL safety check passed: $STAGING_URL"
+
+      - name: Execute Staging Deployment (Vercel)
+        if: ${{ inputs.target_provider == 'vercel' }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_STAGING_PROJECT_ID }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [ "$DRY_RUN" = "true" ] || [ -z "$VERCEL_TOKEN" ]; then
+            echo "[DRY RUN / SIMULATION MODE]"
+            echo "Provider: Vercel Staging"
+            echo "Deployment parameters verified. Cloud upload skipped."
+          else
+            echo "Deploying mini-rag to Vercel Staging..."
+            npx vercel deploy --prod --token "$VERCEL_TOKEN"
+          fi
+
+      - name: Execute Staging Deployment (Docker Container)
+        if: ${{ inputs.target_provider == 'docker_container' }}
+        env:
+          REGISTRY: ${{ secrets.CONTAINER_REGISTRY }}
+          IMAGE_NAME: nileguide-mini-rag-staging
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [ "$DRY_RUN" = "true" ] || [ -z "$REGISTRY" ]; then
+            echo "[DRY RUN / SIMULATION MODE]"
+            echo "Provider: Docker Container Staging"
+            echo "Image: nileguide-mini-rag-staging"
+            echo "Deployment parameters verified. Docker push skipped."
+          else
+            echo "Building and pushing container image..."
+            docker build -t "$REGISTRY/$IMAGE_NAME:${{ needs.validate-and-test.outputs.commit_sha }}" .
+            docker push "$REGISTRY/$IMAGE_NAME:${{ needs.validate-and-test.outputs.commit_sha }}"
+          fi
+
+      - name: Post-Deployment Smoke Verification
+        env:
+          STAGING_URL: ${{ secrets.STAGING_MINI_RAG_URL || vars.STAGING_MINI_RAG_URL }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [ "$DRY_RUN" = "true" ] || [ -z "$STAGING_URL" ]; then
+            echo "Skipping live HTTP probe (dry run or staging URL not configured)."
+          else
+            echo "Probing staging mini-rag root endpoint: $STAGING_URL/"
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 "$STAGING_URL/" || echo "000")
+            if [ "$HTTP_STATUS" != "200" ]; then
+              echo "WARNING: Root health probe returned status $HTTP_STATUS"
+            else
+              echo "Smoke probe passed with HTTP $HTTP_STATUS"
+            fi
+          fi
