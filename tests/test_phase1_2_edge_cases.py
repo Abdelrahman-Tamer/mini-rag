@@ -964,3 +964,11 @@ def test_safe_reindex_chunks_uses_distributed_lock_integration():
                 asset_id="asset_locked_by_other",
                 chunks=[{"text": "chunk 1"}]
             )
+
+
+def test_nlp_controller_type_annotations_resolution():
+    """Regression test ensuring type hints in NLPController evaluate without NameError under Python 3.11+."""
+    import typing
+    hints = typing.get_type_hints(NLPController.safe_reindex_chunks)
+    assert "chunks" in hints
+    assert "return" in hints
