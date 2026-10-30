@@ -1,4 +1,8 @@
-from fastapi import FastAPI, APIRouter, status, Request, Query
+from helpers.config import get_settings
+from helpers.rate_limiter import check_rate_limit
+import uuid
+from fastapi import FastAPI, APIRouter, status, Request, Query, Depends
+from helpers.security import verify_admin_access
 from fastapi.responses import JSONResponse, StreamingResponse
 from routes.schemes.nlp import ChatRequest, SyncActivityRequest
 from controllers import NLPController
@@ -61,6 +65,29 @@ async def list_conversations(request: Request, ids: str = Query("")):
 
 @nlp_router.post("/chat")
 async def chat_endpoint(request: Request, chat_request: ChatRequest):
+    app_settings = get_settings()
+
+    # Rate limiting abuse protection
+    is_allowed, retry_after = check_rate_limit(
+        request=request,
+        max_requests=app_settings.RATE_LIMIT_CHAT_REQUESTS,
+        window_seconds=app_settings.RATE_LIMIT_CHAT_WINDOW_SECONDS,
+        trusted_proxies=app_settings.TRUSTED_PROXIES,
+        trusted_cloudflare_proxies=getattr(app_settings, "TRUSTED_CLOUDFLARE_PROXIES", None),
+        redis_url=app_settings.REDIS_URL,
+        require_redis=getattr(app_settings, "REQUIRE_REDIS_RATE_LIMITER", False),
+        prefix="chat"
+    )
+    if not is_allowed:
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={
+                "signal": "rate_limit_exceeded",
+                "message": "Too many requests. Please wait a moment before sending another message.",
+                "retry_after": retry_after,
+            },
+            headers={"Retry-After": str(retry_after)}
+        )
 
     nlp_controller = NLPController(
         vectordb_client=request.app.vectordb_client,
@@ -75,6 +102,16 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
             status_code=status.HTTP_400_BAD_REQUEST,
             content={
                 "signal": ResponseSignal.INVALID_QUERY.value,
+                "message": "Query text cannot be empty.",
+            }
+        )
+
+    if len(text) > app_settings.CHAT_MAX_MESSAGE_LENGTH:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={
+                "signal": "message_too_long",
+                "message": f"Query exceeds maximum allowed length of {app_settings.CHAT_MAX_MESSAGE_LENGTH} characters.",
             }
         )
 
@@ -120,10 +157,16 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
             category=chat_request.category,
         )
     except Exception as e:
-        logger.error(f"Error during nlp_controller.chat: {traceback.format_exc()}")
+        error_id = uuid.uuid4().hex[:8]
+        logger.error(f"Error during nlp_controller.chat [error_id={error_id}]: {traceback.format_exc()}")
         return JSONResponse(
             status_code=500,
-            content={"error": "chat_retrieval_failed", "details": str(e), "traceback": traceback.format_exc()}
+            content={
+                "signal": ResponseSignal.CHAT_ERROR.value,
+                "error": "chat_retrieval_failed",
+                "message": "An error occurred while retrieving travel knowledge. Please try again later.",
+                "error_id": error_id
+            }
         )
 
     if not results:
@@ -141,10 +184,16 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
                 system_prompt=fallback_prompt,
             )
         except Exception as e:
-            logger.error(f"Error during fallback generation: {traceback.format_exc()}")
+            error_id = uuid.uuid4().hex[:8]
+            logger.error(f"Error during fallback generation [error_id={error_id}]: {traceback.format_exc()}")
             return JSONResponse(
                 status_code=500,
-                content={"error": "fallback_generation_failed", "details": str(e), "traceback": traceback.format_exc()}
+                content={
+                    "signal": ResponseSignal.CHAT_ERROR.value,
+                    "error": "fallback_generation_failed",
+                    "message": "An error occurred while generating travel advice. Please try again later.",
+                    "error_id": error_id
+                }
             )
         answer = answer or "I couldn't find any relevant information on that topic. Try asking about a different destination!"
         if conversation_model and chat_request.conversation_id:
@@ -184,10 +233,16 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
             prior_history=prior_history
         )
     except Exception as e:
-        logger.error(f"Error during generate_chat_answer: {traceback.format_exc()}")
+        error_id = uuid.uuid4().hex[:8]
+        logger.error(f"Error during generate_chat_answer [error_id={error_id}]: {traceback.format_exc()}")
         return JSONResponse(
             status_code=500,
-            content={"error": "chat_generation_failed", "details": str(e), "traceback": traceback.format_exc()}
+            content={
+                "signal": ResponseSignal.CHAT_ERROR.value,
+                "error": "chat_generation_failed",
+                "message": "An error occurred while generating travel response. Please try again later.",
+                "error_id": error_id
+            }
         )
 
     if not answer:
@@ -218,6 +273,28 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
 
 @nlp_router.post("/chat/stream")
 async def chat_stream_endpoint(request: Request, chat_request: ChatRequest):
+    app_settings = get_settings()
+
+    is_allowed, retry_after = check_rate_limit(
+        request=request,
+        max_requests=app_settings.RATE_LIMIT_STREAM_REQUESTS,
+        window_seconds=app_settings.RATE_LIMIT_STREAM_WINDOW_SECONDS,
+        trusted_proxies=app_settings.TRUSTED_PROXIES,
+        trusted_cloudflare_proxies=getattr(app_settings, "TRUSTED_CLOUDFLARE_PROXIES", None),
+        redis_url=app_settings.REDIS_URL,
+        require_redis=getattr(app_settings, "REQUIRE_REDIS_RATE_LIMITER", False),
+        prefix="stream"
+    )
+    if not is_allowed:
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={
+                "signal": "rate_limit_exceeded",
+                "message": "Too many streaming requests. Please wait a moment.",
+                "retry_after": retry_after,
+            },
+            headers={"Retry-After": str(retry_after)}
+        )
     nlp_controller = NLPController(
         vectordb_client=request.app.vectordb_client,
         generation_client=request.app.generation_client,
@@ -291,7 +368,7 @@ async def chat_stream_endpoint(request: Request, chat_request: ChatRequest):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
-@nlp_router.post("/sync/activity")
+@nlp_router.post("/sync/activity", dependencies=[Depends(verify_admin_access)])
 async def sync_activity_endpoint(request: Request, sync_req: SyncActivityRequest):
     nlp_controller = NLPController(
         vectordb_client=request.app.vectordb_client,
@@ -308,7 +385,7 @@ async def sync_activity_endpoint(request: Request, sync_req: SyncActivityRequest
     return JSONResponse(content={"signal": "activity_synced", "action": "upserted", "activity_id": sync_req.activity_id})
 
 
-@nlp_router.post("/sync/reconcile")
+@nlp_router.post("/sync/reconcile", dependencies=[Depends(verify_admin_access)])
 async def reconcile_activities_endpoint(request: Request):
     nlp_controller = NLPController(
         vectordb_client=request.app.vectordb_client,
@@ -351,3 +428,17 @@ async def reconcile_activities_endpoint(request: Request):
             logger.warning(f"Error syncing activity {act.get('activityID')}: {e}")
 
     return JSONResponse(content={"signal": "reconcile_success", "total_synced": synced_count})
+
+@nlp_router.delete("/conversation/{conversation_id}")
+async def delete_conversation(request: Request, conversation_id: str):
+    conversation_model = await ConversationModel.create_instance(
+        db_client=request.app.db_client
+    )
+    from bson import ObjectId
+    try:
+        oid = ObjectId(conversation_id) if ObjectId.is_valid(conversation_id) else conversation_id
+        res = await conversation_model.collection.delete_one({"_id": oid})
+        return JSONResponse(content={"signal": "conversation_deleted", "conversation_id": conversation_id, "deleted_count": res.deleted_count})
+    except Exception as e:
+        logger.error(f"Error deleting conversation {conversation_id}: {e}")
+        return JSONResponse(status_code=500, content={"error": "delete_failed", "details": str(e)})

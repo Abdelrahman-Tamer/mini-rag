@@ -1,16 +1,27 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, AliasChoices
 from typing import List, Optional
+
+INSECURE_PREDICTABLE_KEYS = {
+    "nileguide-admin-secret-2026",
+    "admin",
+    "secret",
+    "password",
+    "changeme",
+    "123456",
+}
 
 class Settings(BaseSettings):
 
     APP_NAME: str = "Mini RAG"
     APP_VERSION: str = "0.1.0"
+    ENVIRONMENT: str = "development"  # "development", "staging", "production"
 
     FILE_ALLOWED_TYPES: list = ["text/plain", "application/pdf", "text/csv", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"]
     FILE_ALLOWED_EXTENSIONS: list = [".txt", ".pdf", ".csv", ".docx"]
     FILE_MAX_SIZE: int = 10
     FILE_DEFAULT_CHUNK_SIZE: int = 512000
-    VECTOR_DB_COLLECTION_NAME: str = "tourism_knowledge_base"
+    VECTOR_DB_COLLECTION_NAME: str = Field(default="tourism_knowledge_base", validation_alias=AliasChoices("VECTOR_DB_COLLECTION_NAME", "QDRANT_COLLECTION_NAME"))
     DEFAULT_CITY: str = "unknown"
     DEFAULT_DOC_TYPE: str = "general"
 
@@ -30,7 +41,7 @@ class Settings(BaseSettings):
     GENERATION_DEFAULT_TEMPERATURE: Optional[float] = 0.2
 
     VECTOR_DB_BACKEND: str = "QDRANT"
-    QDRANT_DB_URL: str = ""
+    QDRANT_DB_URL: str = Field(default="", validation_alias=AliasChoices("QDRANT_DB_URL", "QDRANT_URL"))
     DISTANCE_METHOD: Optional[str] = "cosine"
     QDRANT_DB_API_KEY: str = ""
 
@@ -38,9 +49,58 @@ class Settings(BaseSettings):
     DEFAULT_LANG: str = "ar"
 
     SCORE_THRESHOLD: float = 0.2
-    SYNC_API_KEY: Optional[str] = ""
+
+    # Internal server-to-server admin service credentials.
+    # NEVER defaulted to predictable credentials in production.
+    ADMIN_API_KEY: Optional[str] = None
+    SYNC_API_KEY: Optional[str] = None
+    DEV_ALLOW_DEFAULT_KEY: bool = False
+
+    # Public abuse prevention & rate limiting configuration
+    RATE_LIMIT_CHAT_REQUESTS: int = 15  # Max requests per window
+    RATE_LIMIT_CHAT_WINDOW_SECONDS: int = 60  # Window size in seconds
+    RATE_LIMIT_STREAM_REQUESTS: int = 10  # Max streaming requests per window
+    RATE_LIMIT_STREAM_WINDOW_SECONDS: int = 60
+    CHAT_MAX_MESSAGE_LENGTH: int = 1000  # Max allowed prompt characters
+    REDIS_URL: Optional[str] = None
+    REQUIRE_REDIS_RATE_LIMITER: bool = False
+    TRUSTED_PROXIES: list = ["127.0.0.1", "::1"]
+    TRUSTED_CLOUDFLARE_PROXIES: list = ["127.0.0.1", "::1"]
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+def validate_admin_security_config(settings: Settings) -> None:
+    """
+    Validates required administrative security credentials at startup.
+    Fails closed in production if required keys are missing or set to insecure predictable defaults.
+    """
+    env = (settings.ENVIRONMENT or "development").strip().lower()
+    is_prod = env in ("production", "prod", "staging")
+
+    active_keys = []
+    if settings.ADMIN_API_KEY and settings.ADMIN_API_KEY.strip():
+        active_keys.append(settings.ADMIN_API_KEY.strip())
+    if settings.SYNC_API_KEY and settings.SYNC_API_KEY.strip():
+        active_keys.append(settings.SYNC_API_KEY.strip())
+
+    if is_prod:
+        if settings.REQUIRE_REDIS_RATE_LIMITER and (not settings.REDIS_URL or not settings.REDIS_URL.strip()):
+            raise ValueError(
+                "CRITICAL SECURITY CONFIGURATION ERROR: REQUIRE_REDIS_RATE_LIMITER is enabled in production, "
+                "but REDIS_URL is unconfigured. A distributed Redis cluster is mandatory."
+            )
+
+        if not active_keys:
+            raise ValueError(
+                "CRITICAL SECURITY CONFIGURATION ERROR: ADMIN_API_KEY or SYNC_API_KEY must be set in production. "
+                "The service cannot start without an authentic administrative secret."
+            )
+        for key in active_keys:
+            if key.lower() in INSECURE_PREDICTABLE_KEYS or len(key) < 16:
+                raise ValueError(
+                    "CRITICAL SECURITY CONFIGURATION ERROR: Predictable or weak administrative key detected in production. "
+                    "Use a cryptographically secure random key of at least 16 characters."
+                )
 
 def get_settings():
     return Settings()
