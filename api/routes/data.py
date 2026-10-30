@@ -16,11 +16,14 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from bson import ObjectId
 
+from helpers.security import verify_admin_access
+
 logger = logging.getLogger('uvicorn.error')
 
 data_router = APIRouter(
     prefix="/api/v1/data",
     tags=["api_v1", "data"],
+    dependencies=[Depends(verify_admin_access)],
 )
 
 
@@ -242,24 +245,15 @@ async def update_file(
         }}
     )
 
-    # delete old chunks + vectors
-    chunk_model = await ChunkModel.create_instance(
-        db_client=request.app.db_client
-    )
-    _ = await chunk_model.delete_chunks_by_asset_id(asset_id=file_id)
-
-    nlp_controller = NLPController(
-        vectordb_client=request.app.vectordb_client,
-        generation_client=request.app.generation_client,
-        embedding_client=request.app.embedding_client,
-        template_parser=request.app.template_parser,
-    )
-    _ = nlp_controller.delete_file_vectors(asset_id=file_id)
-
-    # re-process + re-index
+    # 1. Read file content first BEFORE deleting or modifying any existing records
     process_controller = ProcessController()
     file_content = process_controller.get_file_content(file_id=asset.asset_name)
-    inserted_chunks = 0
+    if not file_content:
+        logger.error(f"Cannot re-process file {file_id}: file content not found or empty.")
+        return JSONResponse(
+            status_code=400,
+            content={"signal": "file_content_empty", "error": "File content could not be read."}
+        )
 
     config = asset.asset_config or {}
     chunk_metadata = {
@@ -268,32 +262,92 @@ async def update_file(
         "asset_id": file_id,
     }
 
-    if file_content:
-        file_chunks = process_controller.process_file_content(
-            file_content=file_content,
-            file_id=asset.asset_name,
-            chunk_size=chunk_size,
-            overlap_size=overlap_size,
-            metadata=chunk_metadata
+    # 2. Generate chunks
+    file_chunks = process_controller.process_file_content(
+        file_content=file_content,
+        file_id=asset.asset_name,
+        chunk_size=chunk_size,
+        overlap_size=overlap_size,
+        metadata=chunk_metadata
+    )
+
+    if not file_chunks:
+        logger.warning(f"File {file_id} produced no chunks during processing.")
+        return JSONResponse(
+            status_code=400,
+            content={"signal": "no_chunks_generated", "file_id": file_id}
         )
 
-        if file_chunks:
-            chunk_records = [
-                DataChunk(
-                    chunk_text=chunk.page_content,
-                    chunk_metadata=chunk.metadata,
-                    chunk_order=i+1,
-                )
-                for i, chunk in enumerate(file_chunks)
-            ]
-            inserted_chunks = await chunk_model.insert_many_chunks(chunks=chunk_records)
+    chunk_records = [
+        DataChunk(
+            chunk_text=chunk.page_content,
+            chunk_metadata=chunk.metadata,
+            chunk_order=i+1,
+        )
+        for i, chunk in enumerate(file_chunks)
+    ]
 
-            nlp_controller.index_chunks(chunks=chunk_records)
+    # 3. Query existing chunk count from MongoDB to know if document shrinks
+    chunk_model = await ChunkModel.create_instance(db_client=request.app.db_client)
+    old_chunks = []
+    try:
+        from bson import ObjectId
+        oid = ObjectId(file_id) if ObjectId.is_valid(file_id) else file_id
+        old_chunks = await chunk_model.collection.find({"$or": [{"chunk_asset_id": oid}, {"chunk_metadata.asset_id": str(file_id)}]}).to_list(None)
+    except Exception as e:
+        logger.warning(f"Could not query existing chunks for asset {file_id}: {e}")
+    old_chunk_count = len(old_chunks) or (asset.asset_config.get("chunk_count") if asset.asset_config else 0)
+    old_generation_id = asset.asset_config.get("active_generation_id") if asset.asset_config else None
+    new_generation_id = f"gen_{uuid.uuid4().hex[:12]}"
+
+    # 4. Execute safe re-indexing in Qdrant (embeds -> validates -> upserts -> prunes obsolete)
+    nlp_controller = NLPController(
+        vectordb_client=request.app.vectordb_client,
+        generation_client=request.app.generation_client,
+        embedding_client=request.app.embedding_client,
+        template_parser=request.app.template_parser,
+    )
+    reindex_res = nlp_controller.safe_reindex_chunks(
+        asset_id=file_id,
+        chunks=chunk_records,
+        old_chunk_count=old_chunk_count,
+        old_generation_id=old_generation_id,
+        generation_id=new_generation_id,
+        allow_empty=False
+    )
+
+    if reindex_res.get("status") != "indexed":
+        logger.error(f"Safe re-indexing failed for asset {file_id}: {reindex_res}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "signal": "reindex_failed",
+                "file_id": file_id,
+                "error": reindex_res.get("status", "unknown_failure")
+            }
+        )
+
+    # 5. ONLY after Qdrant indexing succeeds, update MongoDB chunks and asset state
+    _ = await chunk_model.delete_chunks_by_asset_id(asset_id=file_id)
+    inserted_chunks = await chunk_model.insert_many_chunks(chunks=chunk_records)
+
+    updated_config = dict(asset.asset_config or {})
+    updated_config["chunk_count"] = inserted_chunks
+    updated_config["status"] = "indexed"
+    updated_config["active_generation_id"] = reindex_res.get("generation_id", new_generation_id)
+    try:
+        await asset_model.collection.update_one(
+            {"_id": asset.id},
+            {"$set": {"asset_config": updated_config}}
+        )
+    except Exception as e:
+        logger.warning(f"Could not update asset config in MongoDB for {file_id}: {e}")
 
     return JSONResponse(content={
         "signal": ResponseSignal.FILE_UPLOAD_SUCCESS.value,
         "file_id": file_id,
         "inserted_chunks": inserted_chunks,
+        "obsolete_pruned": reindex_res.get("obsolete_pruned", 0)
     })
 
 

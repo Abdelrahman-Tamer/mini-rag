@@ -2,6 +2,7 @@ from qdrant_client import models, QdrantClient
 from ..VectorDBInterface import VectorDBInterface
 from ..VectorDBEnums import DistanceMethodEnums
 import logging
+import uuid
 from typing import List, Optional, Any
 from models.db_schemes import RetrievedDocument
 
@@ -56,7 +57,7 @@ class QdrantDBProvider(VectorDBInterface):
                 )
             )
 
-            for field in ["project_id", "city", "doc_type", "asset_id"]:
+            for field in ["project_id", "city", "doc_type", "asset_id", "generation_id", "is_active"]:
                 try:
                     self.client.create_payload_index(
                         collection_name=collection_name,
@@ -70,20 +71,34 @@ class QdrantDBProvider(VectorDBInterface):
 
         return False
 
-    def _build_filter(self, filter: dict) -> Optional[models.Filter]:
-        if not filter:
-            return None
+    def _build_filter(self, filter: Optional[dict] = None, exclude_inactive: bool = False) -> Optional[models.Filter]:
+        must_conditions = []
+        must_not_conditions = []
 
-        conditions = []
-        for key, value in filter.items():
-            conditions.append(
+        if filter:
+            for key, value in filter.items():
+                must_conditions.append(
+                    models.FieldCondition(
+                        key=f"metadata.{key}",
+                        match=models.MatchValue(value=value)
+                    )
+                )
+
+        if exclude_inactive:
+            must_not_conditions.append(
                 models.FieldCondition(
-                    key=f"metadata.{key}",
-                    match=models.MatchValue(value=value)
+                    key="metadata.is_active",
+                    match=models.MatchValue(value=False)
                 )
             )
 
-        return models.Filter(must=conditions)
+        if not must_conditions and not must_not_conditions:
+            return None
+
+        return models.Filter(
+            must=must_conditions if must_conditions else None,
+            must_not=must_not_conditions if must_not_conditions else None
+        )
 
     def insert_one(self, collection_name: str, text: str, vector: list,
                         metadata: dict = None,
@@ -121,7 +136,12 @@ class QdrantDBProvider(VectorDBInterface):
             metadata = [None] * len(texts)
 
         if record_ids is None:
-            record_ids = list(range(0, len(texts)))
+            record_ids = [str(uuid.uuid4()) for _ in texts]
+        else:
+            record_ids = [
+                int(rid) if str(rid).isdigit() else str(rid)
+                for rid in record_ids
+            ]
 
         for i in range(0, len(texts), batch_size):
             batch_end = i + batch_size
@@ -158,7 +178,7 @@ class QdrantDBProvider(VectorDBInterface):
         if not self.is_collection_existed(collection_name):
             return None
 
-        query_filter = self._build_filter(filter) if filter else None
+        query_filter = self._build_filter(filter, exclude_inactive=True)
 
         try:
             if hasattr(self.client, "query_points"):
@@ -225,4 +245,47 @@ class QdrantDBProvider(VectorDBInterface):
             return True
         except Exception as e:
             self.logger.error(f"Error during delete_by_id: {e}")
+            return False
+
+    def delete_by_ids(self, collection_name: str, record_ids: list) -> bool:
+        if not self.is_collection_existed(collection_name) or not record_ids:
+            return False
+        point_ids = [int(rid) if str(rid).isdigit() else str(rid) for rid in record_ids]
+        try:
+            self.client.delete(
+                collection_name=collection_name,
+                points_selector=models.PointIdsList(
+                    points=point_ids
+                )
+            )
+            return True
+        except Exception as e:
+            self.logger.error(f"Error during delete_by_ids: {e}")
+            return False
+
+    def set_payload(self, collection_name: str, payload: dict, record_ids: list = None, filter: dict = None) -> bool:
+        if not self.is_collection_existed(collection_name):
+            return False
+        try:
+            if filter:
+                query_filter = self._build_filter(filter)
+                if not query_filter:
+                    return False
+                self.client.set_payload(
+                    collection_name=collection_name,
+                    payload=payload,
+                    points=models.FilterSelector(filter=query_filter)
+                )
+                return True
+            elif record_ids:
+                point_ids = [int(rid) if str(rid).isdigit() else str(rid) for rid in record_ids]
+                self.client.set_payload(
+                    collection_name=collection_name,
+                    payload=payload,
+                    points=point_ids
+                )
+                return True
+            return False
+        except Exception as e:
+            self.logger.error(f"Error during set_payload: {e}")
             return False

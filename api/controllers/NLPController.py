@@ -1,7 +1,11 @@
+from contextlib import contextmanager
 from .BaseController import BaseController
 from stores.llm.LLMEnums import DocumentTypeEnum
 from helpers.cache import global_response_cache
 import logging
+import uuid
+import os
+import threading
 
 logger = logging.getLogger('uvicorn.error')
 
@@ -20,6 +24,112 @@ CITY_MAP = {
 }
 
 class NLPController(BaseController):
+    _asset_locks = {}
+    _asset_locks_guard = threading.Lock()
+
+    @classmethod
+    def _get_asset_lock(cls, asset_id: str) -> threading.Lock:
+        with cls._asset_locks_guard:
+            if asset_id not in cls._asset_locks:
+                cls._asset_locks[asset_id] = threading.Lock()
+            return cls._asset_locks[asset_id]
+
+    @contextmanager
+    def asset_lock(self, asset_id: str, ttl_seconds: int = 60):
+        """
+        Atomic context manager for asset re-indexing and rollback.
+        Combines process-local thread locking with distributed Redis locking when REDIS_URL is configured.
+        Guarantees:
+        - Atomic acquisition (SET key token NX PX)
+        - Unique ownership via random UUID token
+        - Safe release via atomic Lua script verifying token ownership
+        - Fail-closed behavior under REQUIRE_REDIS_RATE_LIMITER policy
+        """
+        clean_id = str(asset_id).strip()
+        thread_lock = self._get_asset_lock(clean_id)
+        token = str(uuid.uuid4())
+        lock_key = f"nileguide:lock:asset:{clean_id}"
+        redis_client = None
+
+        if hasattr(self, "app_settings") and self.app_settings.REDIS_URL and self.app_settings.REDIS_URL.strip():
+            try:
+                import redis
+                redis_client = redis.from_url(self.app_settings.REDIS_URL, socket_timeout=1.5)
+            except Exception as e:
+                logger.warning(f"Could not connect to Redis for distributed lock, falling back to local lock: {e}")
+                redis_client = None
+
+        thread_lock.acquire()
+        acquired_redis = False
+        try:
+            if redis_client:
+                try:
+                    acquired_redis = bool(redis_client.set(lock_key, token, nx=True, px=ttl_seconds * 1000))
+                    if not acquired_redis:
+                        raise RuntimeError(f"Concurrent indexing conflict: asset '{clean_id}' is locked by another worker.")
+                except Exception as ex:
+                    if hasattr(self, "app_settings") and getattr(self.app_settings, "REQUIRE_REDIS_RATE_LIMITER", False):
+                        raise RuntimeError(f"Distributed locking failed under strict Redis policy: {ex}")
+                    logger.warning(f"Distributed lock acquisition encountered error: {ex}")
+
+            def check_lock_valid() -> bool:
+                if not redis_client or not acquired_redis:
+                    return True
+                try:
+                    val = redis_client.get(lock_key)
+                    if isinstance(val, bytes):
+                        val = val.decode("utf-8")
+                    return str(val) == token
+                except Exception:
+                    return False
+
+            class LockHandle:
+                def __init__(self, tok, validator):
+                    self.token = tok
+                    self._validator = validator
+                def is_valid(self) -> bool:
+                    return self._validator()
+
+            yield LockHandle(token, check_lock_valid)
+        finally:
+            if redis_client and acquired_redis:
+                try:
+                    release_lua = """
+                    if redis.call('GET', KEYS[1]) == ARGV[1] then
+                        return redis.call('DEL', KEYS[1])
+                    else
+                        return 0
+                    end
+                    """
+                    redis_client.eval(release_lua, 1, lock_key, token)
+                except Exception as e:
+                    logger.warning(f"Error releasing distributed Redis lock for {clean_id}: {e}")
+            thread_lock.release()
+
+
+    def _deduplicate_search_results(self, documents: list) -> list:
+        """
+        Deduplicates vector search results to prevent duplicate chunks
+        if an old generation cleanup failed in Qdrant (Scenario C).
+        Prefers the first (highest scoring) chunk for any (asset_id, chunk_order).
+        """
+        if not documents:
+            return []
+        seen_keys = set()
+        deduped = []
+        for doc in documents:
+            meta = getattr(doc, "metadata", {}) or {}
+            asset_id = meta.get("asset_id")
+            chunk_order = meta.get("chunk_order")
+            if asset_id and chunk_order is not None:
+                dedup_key = f"{asset_id}:{chunk_order}"
+                if dedup_key in seen_keys:
+                    logger.debug(f"Filtered duplicate chunk from obsolete generation: {dedup_key}")
+                    continue
+                seen_keys.add(dedup_key)
+            deduped.append(doc)
+        return deduped
+
 
     def __init__(self, vectordb_client, generation_client,
                 embedding_client, template_parser):
@@ -31,6 +141,7 @@ class NLPController(BaseController):
         self.template_parser = template_parser
         self.collection_name = self.app_settings.VECTOR_DB_COLLECTION_NAME
         self.score_threshold = self.app_settings.SCORE_THRESHOLD
+        self.logger = logger
 
     def extract_city(self, text: str):
         if not text:
@@ -134,6 +245,7 @@ class NLPController(BaseController):
             return None
 
         # 1. Try search with city filter if detected
+        fetch_limit = max(limit * 2, limit + 5)
         results = None
         if target_city and hasattr(self.vectordb_client, "search_by_vector"):
             filter_payload = {"city": target_city}
@@ -142,7 +254,7 @@ class NLPController(BaseController):
             results = self.vectordb_client.search_by_vector(
                 collection_name=self.collection_name,
                 vector=vector,
-                limit=limit,
+                limit=fetch_limit,
                 filter=filter_payload,
             )
 
@@ -151,13 +263,14 @@ class NLPController(BaseController):
             results = self.vectordb_client.search_by_vector(
                 collection_name=self.collection_name,
                 vector=vector,
-                limit=limit,
+                limit=fetch_limit,
             )
 
         if not results:
             return None
 
         results = [doc for doc in results if doc.score >= self.score_threshold]
+        results = self._deduplicate_search_results(results)[:limit]
         return results if results else None
 
     def generate_chat_answer(self, query: str, retrieved_documents: list, prior_history: list = None, system_prompt: str = None):
@@ -324,3 +437,542 @@ class NLPController(BaseController):
 
         global_response_cache.clear()
         return {"status": "deleted", "activity_id": activity_id}
+
+    def index_chunks(self, chunks: list) -> dict:
+        """
+        Generates dense vector embeddings and indexes document chunks into Qdrant.
+        Uses deterministic UUIDv5 point IDs to avoid collisions and enable idempotent retries.
+        """
+        if not chunks:
+            return {"status": "no_chunks", "indexed": 0}
+
+        if not self.vectordb_client:
+            logger.warning("Vector DB client not available for indexing chunks.")
+            return {"status": "vectordb_unavailable", "indexed": 0}
+
+        texts = []
+        metadata = []
+        record_ids = []
+        target_asset_id = None
+
+        for i, chunk in enumerate(chunks):
+            if hasattr(chunk, "chunk_text"):
+                text = chunk.chunk_text
+                meta = dict(chunk.chunk_metadata) if getattr(chunk, "chunk_metadata", None) else {}
+                order = getattr(chunk, "chunk_order", i + 1)
+            elif isinstance(chunk, dict):
+                text = chunk.get("chunk_text") or chunk.get("text") or ""
+                meta = dict(chunk.get("chunk_metadata") or chunk.get("metadata") or {})
+                order = chunk.get("chunk_order", i + 1)
+            else:
+                continue
+
+            if not text or not str(text).strip():
+                continue
+
+            asset_id = str(meta.get("asset_id", "")).strip()
+            if asset_id:
+                target_asset_id = asset_id
+                point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"nileguide_asset_{asset_id}_chunk_{order}"))
+            else:
+                point_id = str(uuid.uuid4())
+
+            meta["asset_id"] = asset_id
+            meta["chunk_order"] = order
+
+            texts.append(str(text))
+            metadata.append(meta)
+            record_ids.append(point_id)
+
+        if not texts:
+            return {"status": "empty", "indexed": 0}
+
+        # Generate embeddings
+        vectors = []
+        for t in texts:
+            vec = self.embedding_client.embed_text(
+                text=t,
+                document_type=DocumentTypeEnum.DOCUMENT.value
+            )
+            if not vec:
+                logger.error("Failed to generate embedding during chunk indexing.")
+                return {"status": "embedding_failed", "indexed": 0}
+            vectors.append(vec)
+
+        # Batch insert into Qdrant
+        if hasattr(self.vectordb_client, "insert_many"):
+            success = self.vectordb_client.insert_many(
+                collection_name=self.collection_name,
+                texts=texts,
+                vectors=vectors,
+                metadata=metadata,
+                record_ids=record_ids,
+                batch_size=50
+            )
+        else:
+            success = False
+            for idx in range(len(texts)):
+                ok = self.vectordb_client.insert_one(
+                    collection_name=self.collection_name,
+                    text=texts[idx],
+                    vector=vectors[idx],
+                    metadata=metadata[idx],
+                    record_id=record_ids[idx]
+                )
+                if ok:
+                    success = True
+
+        global_response_cache.clear()
+        return {
+            "status": "indexed" if success else "failed",
+            "indexed": len(texts) if success else 0,
+            "asset_id": target_asset_id
+        }
+
+    def safe_reindex_chunks(
+        self,
+        asset_id: str,
+        chunks: Optional[list],
+        old_chunk_count: Optional[int] = None,
+        old_generation_id: Optional[str] = None,
+        generation_id: Optional[str] = None,
+        allow_empty: bool = True
+    ) -> dict:
+        """
+        Failure-safe recoverable document re-indexing for Qdrant.
+        Serializes concurrent indexing per-asset using per-asset lock (Scenario D).
+        """
+        if not asset_id or not str(asset_id).strip():
+            return {"status": "invalid_asset_id", "indexed": 0}
+
+        clean_asset_id = str(asset_id).strip()
+
+        with self.asset_lock(clean_asset_id) as lock_handle:
+            return self._safe_reindex_chunks_locked(
+                clean_asset_id=clean_asset_id,
+                chunks=chunks,
+                old_chunk_count=old_chunk_count,
+                old_generation_id=old_generation_id,
+                generation_id=generation_id,
+                allow_empty=allow_empty,
+                lock_handle=lock_handle
+            )
+
+    def _safe_reindex_chunks_locked(
+        self,
+        clean_asset_id: str,
+        chunks: Optional[list],
+        old_chunk_count: Optional[int] = None,
+        old_generation_id: Optional[str] = None,
+        generation_id: Optional[str] = None,
+        allow_empty: bool = True,
+        lock_handle = None
+    ) -> dict:
+
+        # Protection against malformed/null extraction
+        if chunks is None:
+            logger.warning(f"Null chunk list received for asset '{clean_asset_id}'. Refusing to modify vector store.")
+            return {
+                "status": "extraction_failed",
+                "indexed": 0,
+                "preserved": True,
+                "detail": "Null chunk extraction indicates upstream processing failure. Existing vectors preserved."
+            }
+
+        # Handling empty chunk list: distinguish intentional deletion from accidental empty extraction
+        if not chunks:
+            if not allow_empty:
+                logger.warning(f"Empty chunk list received for asset '{clean_asset_id}' with allow_empty=False. Preserving existing vectors.")
+                return {
+                    "status": "empty_chunks_rejected",
+                    "indexed": 0,
+                    "preserved": True,
+                    "detail": "Empty chunk extraction rejected to prevent accidental document erasure. Pass allow_empty=True if intentional."
+                }
+            del_res = self.delete_file_vectors(clean_asset_id)
+            return {"status": "indexed", "indexed": 0, "pruned": del_res.get("deleted", False)}
+
+        if not self.vectordb_client:
+            logger.error("Vector DB client not available for safe re-indexing.")
+            return {"status": "vectordb_unavailable", "indexed": 0}
+
+        texts = []
+        metas = []
+        orders = []
+
+        for i, chunk in enumerate(chunks):
+            if hasattr(chunk, "chunk_text"):
+                text = chunk.chunk_text
+                meta = dict(chunk.chunk_metadata) if getattr(chunk, "chunk_metadata", None) else {}
+                order = getattr(chunk, "chunk_order", i + 1)
+            elif isinstance(chunk, dict):
+                text = chunk.get("chunk_text") or chunk.get("text") or ""
+                meta = dict(chunk.get("chunk_metadata") or chunk.get("metadata") or {})
+                order = chunk.get("chunk_order", i + 1)
+            else:
+                continue
+
+            if not text or not str(text).strip():
+                continue
+
+            texts.append(str(text))
+            metas.append(meta)
+            orders.append(order)
+
+        if not texts:
+            if not allow_empty:
+                return {"status": "empty_chunks_rejected", "indexed": 0, "preserved": True}
+            return {"status": "empty", "indexed": 0}
+
+        # Step 2: Generate and validate embeddings BEFORE touching Qdrant
+        vectors = []
+        expected_dim = None
+        for t in texts:
+            try:
+                vec = self.embedding_client.embed_text(
+                    text=t,
+                    document_type=DocumentTypeEnum.DOCUMENT.value
+                )
+            except Exception as e:
+                logger.error(f"Embedding generation threw exception for chunk: {e}")
+                return {"status": "embedding_failed", "indexed": 0, "error": str(e), "preserved": True}
+
+            if not vec or not isinstance(vec, list) or len(vec) == 0:
+                logger.error("Embedding generation returned empty or invalid vector.")
+                return {"status": "embedding_failed", "indexed": 0, "preserved": True}
+
+            if expected_dim is None:
+                expected_dim = len(vec)
+            elif len(vec) != expected_dim:
+                logger.error(f"Embedding dimension mismatch: expected {expected_dim}, got {len(vec)}")
+                return {"status": "dimension_mismatch", "indexed": 0, "preserved": True}
+
+            vectors.append(vec)
+
+        # Step 3: Assign point IDs and generation metadata
+        record_ids = []
+        metadata = []
+        for i, text in enumerate(texts):
+            order = orders[i]
+            meta = dict(metas[i])
+            meta["asset_id"] = clean_asset_id
+            meta["chunk_order"] = order
+
+            if generation_id:
+                point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"nileguide_asset_{clean_asset_id}_gen_{generation_id}_chunk_{order}"))
+                meta["generation_id"] = generation_id
+                meta["is_active"] = False  # Staged
+            else:
+                # Phase 1.1 deterministic ID
+                point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, f"nileguide_asset_{clean_asset_id}_chunk_{order}"))
+                meta["is_active"] = True
+
+            record_ids.append(point_id)
+            metadata.append(meta)
+
+        # Step 4: Batch upsert with partial-write rollback on failure
+        inserted_point_ids = []
+        batch_size = 50
+        write_failed = False
+        write_error = None
+
+        for b_start in range(0, len(texts), batch_size):
+            b_end = b_start + batch_size
+            b_texts = texts[b_start:b_end]
+            b_vectors = vectors[b_start:b_end]
+            b_meta = metadata[b_start:b_end]
+            b_ids = record_ids[b_start:b_end]
+
+            try:
+                if hasattr(self.vectordb_client, "insert_many"):
+                    ok = self.vectordb_client.insert_many(
+                        collection_name=self.collection_name,
+                        texts=b_texts,
+                        vectors=b_vectors,
+                        metadata=b_meta,
+                        record_ids=b_ids,
+                        batch_size=batch_size
+                    )
+                else:
+                    ok = True
+                    for idx in range(len(b_texts)):
+                        single_ok = self.vectordb_client.insert_one(
+                            collection_name=self.collection_name,
+                            text=b_texts[idx],
+                            vector=b_vectors[idx],
+                            metadata=b_meta[idx],
+                            record_id=b_ids[idx]
+                        )
+                        if not single_ok:
+                            ok = False
+                            break
+
+                if ok:
+                    inserted_point_ids.extend(b_ids)
+                else:
+                    write_failed = True
+                    break
+            except Exception as e:
+                write_failed = True
+                write_error = str(e)
+                break
+
+        # Rollback partial batch write on failure to guarantee Qdrant integrity
+        if write_failed:
+            logger.error(
+                f"Batch write failed during safe re-index for asset {clean_asset_id} "
+                f"(generation={generation_id}). Rolling back {len(inserted_point_ids)} partial points."
+            )
+            try:
+                if inserted_point_ids and hasattr(self.vectordb_client, "delete_by_ids"):
+                    self.vectordb_client.delete_by_ids(self.collection_name, inserted_point_ids)
+                elif hasattr(self.vectordb_client, "delete_by_filter"):
+                    rollback_filter = {"asset_id": clean_asset_id}
+                    if generation_id:
+                        rollback_filter["generation_id"] = generation_id
+                    self.vectordb_client.delete_by_filter(self.collection_name, rollback_filter)
+            except Exception as rb_err:
+                logger.error(f"Rollback cleanup error: {rb_err}")
+
+            return {
+                "status": "vectordb_failed",
+                "indexed": 0,
+                "generation_id": generation_id,
+                "rolled_back": True,
+                "preserved": True,
+                "error": write_error or "Batch insertion failure"
+            }
+
+        # Check lost-lock before Step 5 promotion
+        if lock_handle and not lock_handle.is_valid():
+            logger.error(f"Lost asset lock ownership for '{clean_asset_id}' before promotion! Lease expired or superseded. Rolling back partial writes.")
+            if inserted_point_ids and hasattr(self.vectordb_client, "delete_by_ids"):
+                self.vectordb_client.delete_by_ids(self.collection_name, inserted_point_ids)
+            return {
+                "status": "lock_lost",
+                "indexed": 0,
+                "generation_id": generation_id,
+                "rolled_back": True,
+                "error": "Asset lock lease expired during processing. Changes rolled back to prevent split-brain vector corruption."
+            }
+
+        # Step 5: Promotion & obsolete cleanup
+        obsolete_pruned = 0
+        new_count = len(texts)
+
+        # 5a. If versioned, activate new generation
+        if generation_id and hasattr(self.vectordb_client, "set_payload"):
+            try:
+                self.vectordb_client.set_payload(
+                    collection_name=self.collection_name,
+                    payload={"metadata": {"is_active": True}},
+                    record_ids=record_ids
+                )
+            except Exception as e:
+                logger.warning(f"Could not activate generation {generation_id}: {e}")
+
+        # 5b. Retain previous active generation for rollback (Rollback Retention Policy)
+        cleanup_failed = False
+        retained_generation_id = None
+        if old_generation_id and old_generation_id != generation_id:
+            if hasattr(self.vectordb_client, "set_payload"):
+                try:
+                    set_ok = self.vectordb_client.set_payload(
+                        collection_name=self.collection_name,
+                        payload={"metadata": {"is_active": False, "rollback_retained": True, "status": "retained_for_rollback"}},
+                        filter={"asset_id": clean_asset_id, "generation_id": old_generation_id}
+                    )
+                    if set_ok:
+                        retained_generation_id = old_generation_id
+                        logger.info(f"Retained previous generation '{old_generation_id}' for rollback on asset '{clean_asset_id}'.")
+                    else:
+                        cleanup_failed = True
+                        logger.warning(f"Could not mark old generation {old_generation_id} as rollback-retained.")
+                except Exception as ret_err:
+                    cleanup_failed = True
+                    logger.warning(f"Could not mark old generation {old_generation_id} as rollback-retained for asset {clean_asset_id}: {ret_err}.")
+
+        # 5c. Prune legacy un-versioned points if old_chunk_count > new_count
+        if old_chunk_count and old_chunk_count > new_count and not generation_id:
+            obsolete_ids = [
+                str(uuid.uuid5(uuid.NAMESPACE_DNS, f"nileguide_asset_{clean_asset_id}_chunk_{o}"))
+                for o in range(new_count + 1, old_chunk_count + 1)
+            ]
+            if hasattr(self.vectordb_client, "delete_by_ids"):
+                self.vectordb_client.delete_by_ids(
+                    collection_name=self.collection_name,
+                    record_ids=obsolete_ids
+                )
+                obsolete_pruned = len(obsolete_ids)
+            elif hasattr(self.vectordb_client, "delete_by_id"):
+                for oid in obsolete_ids:
+                    self.vectordb_client.delete_by_id(
+                        collection_name=self.collection_name,
+                        record_id=oid
+                    )
+                obsolete_pruned = len(obsolete_ids)
+
+        # 5d. Also prune legacy points if migrating to versioned generation
+        if generation_id and old_chunk_count and old_chunk_count > 0:
+            legacy_ids = [
+                str(uuid.uuid5(uuid.NAMESPACE_DNS, f"nileguide_asset_{clean_asset_id}_chunk_{o}"))
+                for o in range(1, old_chunk_count + 1)
+            ]
+            if hasattr(self.vectordb_client, "delete_by_ids"):
+                self.vectordb_client.delete_by_ids(self.collection_name, legacy_ids)
+
+        # 5e. Garbage collect explicitly obsolete generations (preserves active & rollback-retained)
+        if hasattr(self.vectordb_client, "delete_by_filter"):
+            try:
+                self.vectordb_client.delete_by_filter(
+                    self.collection_name,
+                    {"asset_id": clean_asset_id, "status": "obsolete"}
+                )
+            except Exception:
+                pass
+
+        global_response_cache.clear()
+        res = {
+            "status": "indexed",
+            "indexed": new_count,
+            "obsolete_pruned": obsolete_pruned,
+            "generation_id": generation_id,
+            "retained_generation_id": retained_generation_id,
+            "asset_id": clean_asset_id,
+            "promoted": True
+        }
+        if cleanup_failed:
+            res["cleanup_failed"] = True
+        return res
+
+    def rollback_asset_generation(self, asset_id: str, target_generation_id: str, current_generation_id: str = None) -> dict:
+        """
+        Safely rolls back an asset's active generation to target_generation_id.
+        Deactivates the current active generation and reactivates the target rollback generation.
+        Guaranteed serial execution under per-asset concurrency locking.
+        """
+        if not asset_id or not str(asset_id).strip():
+            return {"status": "invalid_asset_id", "rolled_back": False}
+        if not target_generation_id or not str(target_generation_id).strip():
+            return {"status": "invalid_target_generation_id", "rolled_back": False}
+
+        clean_asset_id = str(asset_id).strip()
+        clean_target_gen = str(target_generation_id).strip()
+        clean_current_gen = str(current_generation_id).strip() if current_generation_id else None
+
+        with self.asset_lock(clean_asset_id):
+            if not self.vectordb_client:
+                return {"status": "vectordb_unavailable", "rolled_back": False}
+
+            # Step 1: Deactivate current active generation
+            if clean_current_gen and hasattr(self.vectordb_client, "set_payload"):
+                try:
+                    self.vectordb_client.set_payload(
+                        collection_name=self.collection_name,
+                        payload={"metadata": {"is_active": False, "rollback_retained": False, "status": "rolled_back"}},
+                        filter={"asset_id": clean_asset_id, "generation_id": clean_current_gen}
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not deactivate current generation {clean_current_gen}: {e}")
+            elif hasattr(self.vectordb_client, "set_payload"):
+                try:
+                    self.vectordb_client.set_payload(
+                        collection_name=self.collection_name,
+                        payload={"metadata": {"is_active": False, "status": "rolled_back"}},
+                        filter={"asset_id": clean_asset_id, "is_active": True}
+                    )
+                except Exception as e:
+                    logger.warning(f"Could not deactivate existing active generation: {e}")
+
+            # Step 2: Reactivate target generation
+            reactivated = False
+            if hasattr(self.vectordb_client, "set_payload"):
+                try:
+                    reactivated = self.vectordb_client.set_payload(
+                        collection_name=self.collection_name,
+                        payload={"metadata": {"is_active": True, "rollback_retained": False, "status": "active"}},
+                        filter={"asset_id": clean_asset_id, "generation_id": clean_target_gen}
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to reactivate target generation {clean_target_gen}: {e}")
+                    return {"status": "rollback_failed", "error": str(e), "rolled_back": False}
+
+            global_response_cache.clear()
+            return {
+                "status": "rolled_back" if reactivated else "reactivation_failed",
+                "asset_id": clean_asset_id,
+                "target_generation_id": clean_target_gen,
+                "deactivated_generation_id": clean_current_gen,
+                "rolled_back": bool(reactivated)
+            }
+
+    def prune_expired_generations(self, asset_id: str, generation_ids_to_prune: list = None) -> dict:
+        """
+        Safely prunes expired or obsolete generations for an asset while preserving the active
+        and designated rollback-retained generations.
+        """
+        if not asset_id or not str(asset_id).strip():
+            return {"status": "invalid_asset_id", "pruned": 0}
+
+        clean_asset_id = str(asset_id).strip()
+        pruned_count = 0
+
+        with self.asset_lock(clean_asset_id):
+            if not self.vectordb_client:
+                return {"status": "vectordb_unavailable", "pruned": 0}
+
+            if generation_ids_to_prune:
+                for gid in generation_ids_to_prune:
+                    if gid and hasattr(self.vectordb_client, "delete_by_filter"):
+                        try:
+                            ok = self.vectordb_client.delete_by_filter(
+                                self.collection_name,
+                                {"asset_id": clean_asset_id, "generation_id": str(gid).strip()}
+                            )
+                            if ok:
+                                pruned_count += 1
+                        except Exception as e:
+                            logger.warning(f"Could not prune generation {gid}: {e}")
+            elif hasattr(self.vectordb_client, "delete_by_filter"):
+                try:
+                    ok = self.vectordb_client.delete_by_filter(
+                        self.collection_name,
+                        {"asset_id": clean_asset_id, "status": "obsolete"}
+                    )
+                    if ok:
+                        pruned_count += 1
+                except Exception:
+                    pass
+
+            return {
+                "status": "pruned",
+                "asset_id": clean_asset_id,
+                "pruned_generations": pruned_count
+            }
+
+    def delete_file_vectors(self, asset_id: str) -> dict:
+        """
+        Removes all vectors belonging to a specific asset from Qdrant.
+        """
+        if not asset_id or not str(asset_id).strip():
+            return {"status": "invalid_asset_id", "deleted": False}
+
+        clean_asset_id = str(asset_id).strip()
+
+        if not self.vectordb_client:
+            logger.warning("Vector DB client not available for deleting file vectors.")
+            return {"status": "vectordb_unavailable", "deleted": False}
+
+        success = False
+        if hasattr(self.vectordb_client, "delete_by_filter"):
+            success = self.vectordb_client.delete_by_filter(
+                collection_name=self.collection_name,
+                filter={"asset_id": clean_asset_id}
+            )
+
+        global_response_cache.clear()
+        return {
+            "status": "deleted" if success else "failed",
+            "deleted": bool(success),
+            "asset_id": clean_asset_id
+        }
