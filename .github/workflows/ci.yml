@@ -34,7 +34,15 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt pytest httpx redis pydantic-settings
+          pip install -r requirements.txt pytest httpx
+
+      - name: Verify Requirements Parity
+        run: |
+          diff -u requirements.txt api/requirements.txt
+
+      - name: Verify Redis Packaging & Script Availability
+        run: |
+          python scripts/verify_redis_packaging.py
 
       - name: Run Automated Test Suite (pytest)
         run: pytest tests/ -v
