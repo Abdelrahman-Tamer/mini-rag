@@ -20,7 +20,8 @@ import os
 import sys
 import time
 import uuid
-from typing import Set, Tuple
+import ssl
+from typing import Set, Tuple, Dict, Any
 from urllib.parse import urlparse
 from pathlib import Path
 
@@ -32,6 +33,7 @@ for p in [repo_root / "src", repo_root / "api"]:
 
 try:
     import redis
+    import redis.exceptions
 except ImportError:
     print("[ERROR] redis-py is not installed in the current environment.", file=sys.stderr)
     sys.exit(1)
@@ -39,28 +41,120 @@ except ImportError:
 from helpers.rate_limiter import LUA_SLIDING_WINDOW_SCRIPT, check_rate_limit
 
 
+def sanitize_and_validate_redis_url(raw_url: str) -> Tuple[str, Dict[str, Any]]:
+    """
+    Sanitizes raw Redis URL by stripping accidental surrounding quotes or whitespace,
+    and returns a cleaned URL along with sanitized connection metadata.
+    Never exposes credentials in returned metadata.
+    """
+    if not raw_url:
+        raise ValueError("REDIS_URL is empty")
+
+    cleaned = raw_url.strip().strip('"').strip("'").strip()
+    parsed = urlparse(cleaned)
+
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("redis", "rediss", "unix"):
+        raise ValueError(f"Unsupported Redis URL scheme: '{scheme}'. Must be 'rediss://' or 'redis://'")
+
+    hostname = parsed.hostname or "unknown"
+    port = parsed.port or (6379 if scheme in ("redis", "rediss") else 0)
+    db = parsed.path.lstrip("/") or "0"
+
+    # Mask host partially for privacy (e.g. sensible-slug-12345.upstash.io -> ***.upstash.io)
+    host_parts = hostname.split(".")
+    if len(host_parts) > 2:
+        masked_host = f"***.{'.'.join(host_parts[-2:])}"
+    else:
+        masked_host = "***.host"
+
+    meta = {
+        "scheme": scheme,
+        "is_tls_scheme": scheme == "rediss",
+        "has_username": bool(parsed.username),
+        "has_password": bool(parsed.password),
+        "masked_host": masked_host,
+        "port": port,
+        "db": db,
+    }
+    return cleaned, meta
+
+
 def get_masked_url_info(url_str: str) -> str:
     """Parses a Redis URI and returns a sanitized summary without credentials."""
     try:
-        parsed = urlparse(url_str)
-        scheme = parsed.scheme
-        hostname = parsed.hostname or "unknown"
-        port = parsed.port or 6379
-        db = parsed.path.lstrip("/") or "0"
-        
-        # Mask hostname partially for privacy
-        host_parts = hostname.split(".")
-        if len(host_parts) > 2:
-            masked_host = f"***.{'.'.join(host_parts[-2:])}"
+        _, meta = sanitize_and_validate_redis_url(url_str)
+        auth_desc = "Present" if (meta["has_username"] or meta["has_password"]) else "None"
+        tls_desc = "Yes" if meta["is_tls_scheme"] else "No"
+        return f"Scheme={meta['scheme']}:// | Host={meta['masked_host']} | Port={meta['port']} | DB={meta['db']} | Auth={auth_desc} | TLS={tls_desc}"
+    except Exception as e:
+        return f"Scheme=unknown (parsing error: {e})"
+
+
+def classify_connection_error(exc: Exception, meta: Dict[str, Any]) -> str:
+    """
+    Analyzes an exception during Redis connection/ping and returns an actionable diagnosis.
+    Never prints or reveals credentials.
+    """
+    err_str = str(exc)
+    err_type = type(exc).__name__
+
+    # 1. Authentication failure
+    if isinstance(exc, redis.exceptions.AuthenticationError) or "NOAUTH" in err_str or "WRONGPASS" in err_str:
+        return (
+            "AUTHENTICATION FAILURE: The server rejected the provided credentials.\n"
+            "  -> Ensure the password/token is correct.\n"
+            "  -> Expected format: rediss://default:<PASSWORD_OR_TOKEN>@<HOST>:<PORT>\n"
+            "  -> Note: Use the Redis TCP password from Upstash, NOT the REST API token unless they are identical."
+        )
+
+    # 2. Plaintext-to-TLS port mismatch
+    if meta.get("scheme") == "redis" and ("Connection closed by server" in err_str or "BrokenPipeError" in err_str):
+        return (
+            "PLAINTEXT-TO-TLS MISMATCH: Connection closed by server because plaintext TCP ('redis://') was sent to a TLS-only port.\n"
+            "  -> Upstash clusters enforce TLS on port 6379.\n"
+            "  -> Fix: Change URI scheme from 'redis://' to 'rediss://'."
+        )
+
+    # 3. TLS / SSL handshake failure
+    if "SSL" in err_type or "ssl" in err_str.lower() or "certificate" in err_str.lower():
+        return (
+            f"TLS/SSL HANDSHAKE ERROR ({err_type}):\n"
+            f"  -> Error details: {err_str}\n"
+            "  -> Possible causes: CA bundle mismatch, expired certificate, or SNI negotiation issue."
+        )
+
+    # 4. Timeout error
+    if isinstance(exc, (redis.exceptions.TimeoutError, TimeoutError)) or "timed out" in err_str.lower():
+        return (
+            "NETWORK TIMEOUT: Connection timed out attempting to reach the Redis host.\n"
+            "  -> Check network connectivity, DNS resolution, or firewall/IP allowlist rules."
+        )
+
+    # 5. Connection closed by server while TLS is active
+    if "Connection closed by server" in err_str:
+        if meta.get("is_tls_scheme"):
+            return (
+                "CONNECTION CLOSED BY SERVER (TLS Active):\n"
+                "  -> Upstash terminated the connection during or immediately after the handshake.\n"
+                "  -> Possible causes: Invalid credentials, rate limit exceeded on Upstash free tier, or database paused/inactive."
+            )
         else:
-            masked_host = "***.host"
-            
-        return f"Scheme={scheme}:// | Host={masked_host} | Port={port} | DB={db} | TLS={'Yes' if scheme == 'rediss' else 'No'}"
-    except Exception:
-        return "Scheme=unknown (parsing error)"
+            return (
+                "CONNECTION CLOSED BY SERVER (Plaintext TCP):\n"
+                "  -> Server closed connection. Check if endpoint requires TLS ('rediss://')."
+            )
+
+    return f"CONNECTION ERROR ({err_type}): {err_str}"
 
 
 def run_diagnostics(redis_url: str) -> bool:
+    try:
+        cleaned_url, meta = sanitize_and_validate_redis_url(redis_url)
+    except Exception as e:
+        print(f"[ERROR] Invalid Redis URL format: {e}", file=sys.stderr)
+        return False
+
     run_id = f"diag_{int(time.time())}_{uuid.uuid4().hex[:6]}"
     diag_prefix = f"nileguide:diag:{run_id}:"
     created_keys: Set[str] = set()
@@ -69,28 +163,58 @@ def run_diagnostics(redis_url: str) -> bool:
     print("NileGuide mini-rag — Upstash Redis Connectivity Diagnostic")
     print(f"Test Run ID:    {run_id}")
     print(f"Diagnostic Key: {diag_prefix}*")
-    print(f"Target Details: {get_masked_url_info(redis_url)}")
+    print(f"Target Details: {get_masked_url_info(cleaned_url)}")
     print("=" * 70)
+
+    # Pre-flight scheme check & warning
+    if not meta["is_tls_scheme"]:
+        print("\n  [CRITICAL WARNING] The connection URL uses 'redis://' (plaintext TCP).", file=sys.stderr)
+        print("  Upstash endpoints require TLS ('rediss://').", file=sys.stderr)
+        print("  Connecting with 'redis://' will almost certainly fail with 'Connection closed by server.'\n", file=sys.stderr)
+
+    if not meta["has_password"]:
+        print("  [WARNING] No password/token found in URL. Authentication will likely fail.", file=sys.stderr)
 
     client = None
     all_passed = True
 
     try:
         # Step 1: TLS Connection & Initialization
-        print("\n[Step 1/6] Establishing Redis connection with socket timeout (3.0s)...")
-        client = redis.from_url(redis_url, socket_timeout=3.0)
-        conn_kwargs = client.connection_pool.connection_kwargs
-        is_tls = conn_kwargs.get("ssl") is True or "SSLConnection" in str(client.connection_pool.connection_class)
-        print(f"  TLS Configuration: {'ENABLED (SSL Verified)' if is_tls else 'WARNING: TLS NOT ACTIVE'}")
-        
+        print("\n[Step 1/6] Initializing Redis connection pool with socket timeout (3.0s)...")
+        client = redis.from_url(cleaned_url, socket_timeout=3.0)
+        is_ssl_class = issubclass(client.connection_pool.connection_class, redis.connection.SSLConnection)
+        print(f"  Connection Pool Class: {client.connection_pool.connection_class.__name__}")
+        print(f"  TLS Configuration:     {'ENABLED (SSLConnection pool)' if is_ssl_class else 'WARNING: TLS NOT ACTIVE (Plaintext Connection)'}")
+
         # Step 2: PING / PONG
         print("\n[Step 2/6] Sending Redis PING command...")
-        ping_response = client.ping()
-        if ping_response is True:
-            print("  PING returned: PONG (Connection Healthy)")
-        else:
-            print(f"  [FAIL] Unexpected PING response: {ping_response}")
-            all_passed = False
+        try:
+            ping_response = client.ping()
+            if ping_response is True:
+                print("  PING returned: PONG (Connection Healthy)")
+                # Inspect underlying socket TLS info if available
+                try:
+                    conn = client.connection_pool.get_connection("ping")
+                    try:
+                        conn.connect()
+                        sock = getattr(conn, "_sock", None)
+                        if sock is not None and isinstance(sock, ssl.SSLSocket):
+                            v = sock.version() or "TLS"
+                            c = sock.cipher()
+                            c_name = c[0] if c else "unknown"
+                            print(f"  Active TLS Socket:     Verified ({v}, cipher={c_name})")
+                    finally:
+                        client.connection_pool.release(conn)
+                except Exception:
+                    pass
+            else:
+                print(f"  [FAIL] Unexpected PING response: {ping_response}")
+                all_passed = False
+        except Exception as ping_err:
+            diagnosis = classify_connection_error(ping_err, meta)
+            print(f"  [FAIL] PING failed: {ping_err}", file=sys.stderr)
+            print(f"\n[DIAGNOSTIC ANALYSIS]\n{diagnosis}\n", file=sys.stderr)
+            raise ping_err
 
         # Step 3: Sorted Set Operations
         print("\n[Step 3/6] Verifying Sorted Set (ZSET) commands for sliding window...")
@@ -248,14 +372,16 @@ def verify_fail_closed_policy() -> bool:
 
 def main() -> int:
     redis_url = os.environ.get("REDIS_URL")
-    
+    if redis_url:
+        redis_url = redis_url.strip().strip('"').strip("'").strip()
+
     # If not in process environment, check .env in scratch directory or current directory
     if not redis_url:
         scratch_env = Path(r"C:\Users\DELL\.gemini\antigravity\brain\c95201ec-bbb8-4f6d-b0f7-684e71df0a5c\scratch\.env.production")
         if scratch_env.exists():
             for line in scratch_env.read_text(encoding="utf-8").splitlines():
                 if line.startswith("REDIS_URL=") and not line.startswith("REDIS_URL=[SENSITIVE]"):
-                    val = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    val = line.split("=", 1)[1].strip().strip('"').strip("'").strip()
                     if val and val != "[SENSITIVE]":
                         redis_url = val
                         break
@@ -269,8 +395,8 @@ def main() -> int:
         print("in the local process environment. Running fail-closed policy verification...\n")
         verify_fail_closed_policy()
         print("\nTo test live Upstash connectivity directly:")
-        print("  1. In PowerShell: $env:REDIS_URL = 'rediss://default:<TOKEN>@<HOST>:<PORT>'")
-        print("  2. Run: python scripts/diagnose_upstash_connectivity.py")
+        print("  1. In PowerShell: .\\scripts\\run_secure_upstash_check.ps1")
+        print("     (prompts securely without echoing or logging the URL)")
         print("\nDiagnostic script ready. Returning code 0.")
         return 0
 

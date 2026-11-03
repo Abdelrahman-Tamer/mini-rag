@@ -1,6 +1,7 @@
 import time
 import uuid
 import sys
+import ssl
 from pathlib import Path
 import pytest
 from unittest.mock import MagicMock, patch
@@ -9,7 +10,16 @@ repo_root = str(Path(__file__).resolve().parent.parent)
 if repo_root not in sys.path:
     sys.path.insert(0, repo_root)
 
-from scripts.diagnose_upstash_connectivity import run_diagnostics, get_masked_url_info, verify_fail_closed_policy
+import redis
+import redis.exceptions
+
+from scripts.diagnose_upstash_connectivity import (
+    run_diagnostics,
+    get_masked_url_info,
+    verify_fail_closed_policy,
+    sanitize_and_validate_redis_url,
+    classify_connection_error,
+)
 
 
 class MockUpstashRedisClient:
@@ -17,7 +27,7 @@ class MockUpstashRedisClient:
     def __init__(self):
         self.connection_pool = MagicMock()
         self.connection_pool.connection_kwargs = {"ssl": True, "socket_timeout": 3.0}
-        self.connection_pool.connection_class = "SSLConnection"
+        self.connection_pool.connection_class = redis.connection.SSLConnection
         self._store = {}
         self._ttls = {}
 
@@ -120,11 +130,96 @@ def test_masked_url_info_does_not_leak_secrets():
     assert "Port=6379" in masked
 
 
+def test_sanitize_and_validate_redis_url_quoted_and_whitespace():
+    """Confirms accidental surrounding quotes and whitespace are safely stripped."""
+    quoted_double = '"rediss://default:secret@myhost.upstash.io:6379/0"'
+    cleaned, meta = sanitize_and_validate_redis_url(quoted_double)
+    assert cleaned == "rediss://default:secret@myhost.upstash.io:6379/0"
+    assert meta["scheme"] == "rediss"
+    assert meta["is_tls_scheme"] is True
+    assert meta["port"] == 6379
+    assert meta["has_password"] is True
+    assert "secret" not in meta["masked_host"]
+
+    quoted_single = "'  rediss://default:secret@myhost.upstash.io:6379  '"
+    cleaned_s, meta_s = sanitize_and_validate_redis_url(quoted_single)
+    assert cleaned_s == "rediss://default:secret@myhost.upstash.io:6379"
+    assert meta_s["scheme"] == "rediss"
+    assert meta_s["is_tls_scheme"] is True
+
+
+def test_sanitize_and_validate_redis_url_plaintext_detection():
+    """Confirms plaintext redis:// is detected and flagged."""
+    raw_url = "redis://default:secret@myhost.upstash.io:6379"
+    cleaned, meta = sanitize_and_validate_redis_url(raw_url)
+    assert cleaned == raw_url
+    assert meta["scheme"] == "redis"
+    assert meta["is_tls_scheme"] is False
+
+
+def test_sanitize_and_validate_redis_url_invalid_scheme():
+    """Confirms invalid schemes raise ValueError."""
+    with pytest.raises(ValueError, match="Unsupported Redis URL scheme"):
+        sanitize_and_validate_redis_url("https://myhost.upstash.io:6379")
+
+
+def test_tls_connection_pool_class_detection():
+    """Confirms issubclass checks accurately distinguish SSLConnection from plain Connection."""
+    client_ssl = redis.from_url("rediss://default:mock@myhost.upstash.io:6379")
+    assert issubclass(client_ssl.connection_pool.connection_class, redis.connection.SSLConnection)
+
+    client_plain = redis.from_url("redis://default:mock@myhost.upstash.io:6379")
+    assert not issubclass(client_plain.connection_pool.connection_class, redis.connection.SSLConnection)
+
+
+def test_classify_connection_error_plaintext_to_tls_mismatch():
+    """Confirms plaintext connection error against TLS port is accurately diagnosed."""
+    meta = {"scheme": "redis", "is_tls_scheme": False}
+    exc = redis.exceptions.ConnectionError("Connection closed by server.")
+    diag = classify_connection_error(exc, meta)
+    assert "PLAINTEXT-TO-TLS MISMATCH" in diag
+    assert "Change URI scheme from 'redis://' to 'rediss://'" in diag
+
+
+def test_classify_connection_error_authentication():
+    """Confirms authentication failures are accurately diagnosed."""
+    meta = {"scheme": "rediss", "is_tls_scheme": True}
+    exc = redis.exceptions.AuthenticationError("WRONGPASS invalid username-password pair")
+    diag = classify_connection_error(exc, meta)
+    assert "AUTHENTICATION FAILURE" in diag
+    assert "rediss://default:<PASSWORD_OR_TOKEN>@<HOST>:<PORT>" in diag
+
+
+def test_classify_connection_error_timeout():
+    """Confirms timeout errors are classified with network remediation guidance."""
+    meta = {"scheme": "rediss", "is_tls_scheme": True}
+    exc = redis.exceptions.TimeoutError("Timeout connecting to server")
+    diag = classify_connection_error(exc, meta)
+    assert "NETWORK TIMEOUT" in diag
+
+
+def test_classify_connection_error_tls_handshake():
+    """Confirms SSL certificate/handshake failures are classified."""
+    meta = {"scheme": "rediss", "is_tls_scheme": True}
+    exc = Exception("[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed")
+    diag = classify_connection_error(exc, meta)
+    assert "TLS/SSL HANDSHAKE ERROR" in diag
+
+
+def test_classify_connection_error_tls_closed_by_server():
+    """Confirms connection closed while TLS is active indicates auth, rate limit or instance status."""
+    meta = {"scheme": "rediss", "is_tls_scheme": True}
+    exc = redis.exceptions.ConnectionError("Connection closed by server.")
+    diag = classify_connection_error(exc, meta)
+    assert "CONNECTION CLOSED BY SERVER (TLS Active)" in diag
+
+
 def test_run_diagnostics_flow_simulation():
     """Executes the full diagnostic workflow against the simulated Upstash client."""
     mock_client = MockUpstashRedisClient()
     mock_redis = MagicMock()
     mock_redis.from_url.return_value = mock_client
+    mock_redis.connection = redis.connection
 
     with patch("scripts.diagnose_upstash_connectivity.redis", mock_redis):
         result = run_diagnostics("rediss://default:mock@mock.upstash.io:6379/0")

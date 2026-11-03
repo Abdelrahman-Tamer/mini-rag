@@ -3,8 +3,8 @@
     Secure execution wrapper for NileGuide Upstash Redis diagnostic.
 .DESCRIPTION
     Prompts the operator for REDIS_URL using hidden input (-AsSecureString),
-    executes the non-destructive diagnostic suite, and ensures the environment
-    variable is cleared from memory immediately upon completion.
+    sanitizes input, executes the non-destructive diagnostic suite, and ensures
+    the environment variable and BSTR memory are wiped immediately upon completion.
     Never logs or persists credentials.
 #>
 
@@ -29,6 +29,18 @@ $ExitCode = 1
 $Bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureUrl)
 try {
     $PlainUrl = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($Bstr)
+    if ($null -ne $PlainUrl) {
+        $PlainUrl = $PlainUrl.Trim().Trim('"').Trim("'").Trim()
+    }
+    
+    if (-not ($PlainUrl.StartsWith("rediss://") -or $PlainUrl.StartsWith("redis://"))) {
+        Write-Warning "The provided connection string does not begin with 'rediss://' or 'redis://'."
+    }
+    elseif ($PlainUrl.StartsWith("redis://")) {
+        Write-Warning "Notice: You entered a 'redis://' URI (plaintext TCP). Upstash clusters mandate TLS ('rediss://')."
+        Write-Warning "If PING fails with 'Connection closed by server', change scheme to 'rediss://'."
+    }
+    
     $env:REDIS_URL = $PlainUrl
     
     # Run the verified Python diagnostic script
