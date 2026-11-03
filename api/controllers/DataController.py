@@ -48,7 +48,8 @@ class DataController(BaseController):
 
     def get_clean_file_name(self, orig_file_name: str):
 
-        basename = os.path.basename(orig_file_name or "file")
+        normalized_path = (orig_file_name or "file").replace("\\", "/")
+        basename = os.path.basename(normalized_path)
         cleaned_file_name = re.sub(r'[^\w.]', '', basename.strip())
         cleaned_file_name = cleaned_file_name.replace(" ", "_")
         return cleaned_file_name or "document"

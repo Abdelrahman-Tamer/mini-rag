@@ -18,7 +18,7 @@ logger = logging.getLogger("uvicorn.error")
 try:
     from routes import base, data, nlp
     from motor.motor_asyncio import AsyncIOMotorClient
-    from helpers.config import get_settings
+    from helpers.config import get_settings, validate_admin_security_config, validate_embedding_config
     from stores.llm.LLMProviderFactory import LLMProviderFactory
     from stores.vectordb.VectorDBProviderFactory import VectorDBProviderFactory
     from stores.llm.templates.template_parser import TemplateParser
@@ -29,6 +29,8 @@ try:
         if getattr(app.state, "initialized", False):
             return
         settings = get_settings()
+        validate_admin_security_config(settings)
+        validate_embedding_config(settings)
 
         if not settings.MONGODB_URL:
             logger.warning("MONGODB_URL is not set!")
@@ -41,14 +43,19 @@ try:
         llm_provider_factory = LLMProviderFactory(settings)
         vectordb_provider_factory = VectorDBProviderFactory(settings)
 
-        # generation client
-        app.generation_client = llm_provider_factory.create(provider=settings.GENERATION_BACKEND)
-        app.generation_client.set_generation_model(model_id=settings.GENERATION_MODEL_ID)
+        if not settings.OPENAI_API_KEY:
+            logger.warning("OPENAI_API_KEY is not set!")
+            app.generation_client = None
+            app.embedding_client = None
+        else:
+            # generation client
+            app.generation_client = llm_provider_factory.create(provider=settings.GENERATION_BACKEND)
+            app.generation_client.set_generation_model(model_id=settings.GENERATION_MODEL_ID)
 
-        # embedding client
-        app.embedding_client = llm_provider_factory.create(provider=settings.EMBEDDING_BACKEND)
-        app.embedding_client.set_embedding_model(model_id=settings.EMBEDDING_MODEL_ID,
-                                                embedding_size=settings.EMBEDDING_MODEL_SIZE)
+            # embedding client
+            app.embedding_client = llm_provider_factory.create(provider=settings.EMBEDDING_BACKEND)
+            app.embedding_client.set_embedding_model(model_id=settings.EMBEDDING_MODEL_ID,
+                                                    embedding_size=settings.EMBEDDING_MODEL_SIZE)
         
         # vector db client
         if not settings.QDRANT_DB_URL:
@@ -102,6 +109,7 @@ try:
     @app.get("/")
     async def root():
         settings = get_settings()
+        validate_admin_security_config(settings)
         return {
             "status": "ok",
             "service": "NileGuide AI Chatbot API",

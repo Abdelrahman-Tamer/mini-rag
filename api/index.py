@@ -39,13 +39,15 @@ async def init_services():
     if getattr(app.state, "initialized", False):
         return True
     try:
-        from helpers.config import get_settings
+        from helpers.config import get_settings, validate_admin_security_config, validate_embedding_config
         from motor.motor_asyncio import AsyncIOMotorClient
         from stores.llm.LLMProviderFactory import LLMProviderFactory
         from stores.vectordb.VectorDBProviderFactory import VectorDBProviderFactory
         from stores.llm.templates.template_parser import TemplateParser
 
         settings = get_settings()
+        validate_admin_security_config(settings)
+        validate_embedding_config(settings)
 
         if settings.MONGODB_URL:
             app.mongo_conn = AsyncIOMotorClient(settings.MONGODB_URL)
