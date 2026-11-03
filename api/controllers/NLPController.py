@@ -1,3 +1,4 @@
+import re
 from contextlib import contextmanager
 from typing import Optional, List, Dict, Any, Union
 from .BaseController import BaseController
@@ -212,17 +213,67 @@ class NLPController(BaseController):
             logger.warning(f"Query rewriting failed: {e}. Falling back to original query.")
             return query
 
+    @staticmethod
+    def normalize_text_for_greeting(text: str) -> str:
+        if not text:
+            return ""
+        s = text.strip().lower()
+        # Strip Arabic diacritics / Tashkeel / Harakat / Tanween (U+064B to U+0652, U+0670)
+        s = re.sub(r'[\u064b-\u0652\u0670]', '', s)
+        # Strip Tatweel / Kashida (U+0640)
+        s = re.sub(r'\u0640', '', s)
+        # Normalize Alef variants (أ, إ, آ, ٱ -> ا)
+        s = re.sub(r'[أإآٱ]', 'ا', s)
+        # Normalize Ta Marbuta (ة -> ه)
+        s = re.sub(r'ة', 'ه', s)
+        # Normalize Yaa / Alef Maqsura (ى -> ي)
+        s = re.sub(r'ى', 'ي', s)
+        # Strip Arabic & English punctuation
+        s = re.sub(r'[?!.,;:؟،؛…!؟\-_\'\"]+', '', s)
+        # Collapse whitespace
+        s = re.sub(r'\s+', ' ', s).strip()
+        return s
+
     def is_greeting_query(self, query: str) -> bool:
-        query_clean = query.strip().lower().rstrip("?!.,;:")
+        if not query:
+            return False
+        norm = self.normalize_text_for_greeting(query)
+        if not norm:
+            return False
+
         greetings = {
+            # English
             "hi", "hello", "hey", "howdy", "greetings",
             "good morning", "good afternoon", "good evening", "good day",
             "what's up", "sup", "yo",
-            "مرحبا", "اهلا", "اهلاً", "السلام عليكم", "سلام",
+            "hi there", "hello there", "hey there",
+            # Arabic (normalized forms: no hamza, no tashkeel, no tanween)
+            "مرحبا", "اهلا", "اهلين", "السلام عليكم", "سلام",
+            "مرحبا بك", "مرحبا بكم", "يا هلا", "صباح الخير", "مساء الخير",
+            "اهلا وسهلا", "تحياتي",
+            # French
             "bonjour", "salut", "bonsoir",
-            "hola", "buenos días", "buenas tardes",
+            # Spanish
+            "hola", "buenos dias", "buenas tardes",
         }
-        return query_clean in greetings
+        if norm in greetings:
+            return True
+
+        greeting_prefixes = (
+            "السلام عليكم",
+            "اهلا وسهلا",
+            "مرحبا بك",
+            "صباح الخير",
+            "مساء الخير",
+        )
+        for prefix in greeting_prefixes:
+            if norm == prefix or norm.startswith(prefix + " "):
+                rest = norm[len(prefix):].strip()
+                pleasantries = {"ورحمه الله", "ورحمه الله وبركته", "ورحمه الله وبركاته", "يا غالي", "يا صديقي", "عزيزي"}
+                if not rest or rest in pleasantries or (len(rest.split()) <= 3 and any(w in rest for w in ["ورحمه", "بركته", "تعالى"])):
+                    return True
+
+        return False
 
     def chat(self, query: str, limit: int = 5, prior_history: list = None, city: str = None, category: str = None):
         if not query or not query.strip():
