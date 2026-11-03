@@ -145,12 +145,15 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
             answer = "Hello and welcome to NileGuide! How can I help you explore Egypt today?"
 
         if conversation_model and chat_request.conversation_id:
-            await conversation_model.append_turn(
-                conversation_id=chat_request.conversation_id,
-                user_msg=text,
-                assistant_msg=answer,
-                assistant_sources=[]
-            )
+            try:
+                await conversation_model.append_turn(
+                    conversation_id=chat_request.conversation_id,
+                    user_msg=text,
+                    assistant_msg=answer,
+                    assistant_sources=[]
+                )
+            except Exception as conv_err:
+                logger.warning(f"Failed to append greeting turn to conversation: {conv_err}")
         return JSONResponse(
             content={
                 "signal": ResponseSignal.CHAT_SUCCESS.value,

@@ -66,16 +66,44 @@ def test_needs_query_rewriting_with_history(nlp_controller):
 
 
 def test_is_greeting_query(nlp_controller):
+    # Standard English greetings
     assert nlp_controller.is_greeting_query("hello") is True
     assert nlp_controller.is_greeting_query("hi") is True
     assert nlp_controller.is_greeting_query("hey") is True
     assert nlp_controller.is_greeting_query("good morning") is True
-    assert nlp_controller.is_greeting_query("مرحبا") is True
-    assert nlp_controller.is_greeting_query("اهلا") is True
-    assert nlp_controller.is_greeting_query("السلام عليكم") is True
+    assert nlp_controller.is_greeting_query("good morning!") is True
+    assert nlp_controller.is_greeting_query("Hello!") is True
+    assert nlp_controller.is_greeting_query("HELLO???") is True
+    assert nlp_controller.is_greeting_query("hi there") is True
+    assert nlp_controller.is_greeting_query("hello there") is True
 
+    # Arabic greetings: base forms, tanween, tashkeel, hamza, punctuation
+    assert nlp_controller.is_greeting_query("مرحبا") is True
+    assert nlp_controller.is_greeting_query("مرحباً") is True
+    assert nlp_controller.is_greeting_query("مَرْحَبًا") is True
+    assert nlp_controller.is_greeting_query("مرحبا؟") is True
+    assert nlp_controller.is_greeting_query("مرحبا!") is True
+    assert nlp_controller.is_greeting_query("مرحبا،") is True
+    assert nlp_controller.is_greeting_query("مرحبا بك") is True
+    assert nlp_controller.is_greeting_query("مرحبا بكم") is True
+    assert nlp_controller.is_greeting_query("اهلا") is True
+    assert nlp_controller.is_greeting_query("أهلا") is True
+    assert nlp_controller.is_greeting_query("أهلاً") is True
+    assert nlp_controller.is_greeting_query("أهلاً وسهلاً") is True
+    assert nlp_controller.is_greeting_query("اهلا وسهلا") is True
+    assert nlp_controller.is_greeting_query("السلام عليكم") is True
+    assert nlp_controller.is_greeting_query("السلام عليكم ورحمة الله") is True
+    assert nlp_controller.is_greeting_query("السلام عليكم ورحمة الله وبركاته") is True
+    assert nlp_controller.is_greeting_query("صباح الخير") is True
+    assert nlp_controller.is_greeting_query("مساء الخير") is True
+    assert nlp_controller.is_greeting_query("يا هلا") is True
+    assert nlp_controller.is_greeting_query("اهلين") is True
+
+    # Non-greeting queries MUST return False to allow search & RAG
     assert nlp_controller.is_greeting_query("What are the best tours in Cairo?") is False
     assert nlp_controller.is_greeting_query("أفضل الأنشطة في مصر") is False
+    assert nlp_controller.is_greeting_query("مرحبا، أين يقع المتحف المصري؟") is False
+    assert nlp_controller.is_greeting_query("السلام عليكم أريد حجز فندق في القاهرة") is False
 
 
 def test_sync_activity_upsert(nlp_controller):
@@ -106,3 +134,53 @@ def test_delete_activity(nlp_controller):
         collection_name=nlp_controller.collection_name,
         filter={"activity_id": 99},
     )
+
+
+def test_greeting_endpoint_bypasses_llm_and_vector_search():
+    from fastapi.testclient import TestClient
+    from api.index import app
+    from unittest.mock import MagicMock
+
+    # Setup mock app state
+    app.state.initialized = True
+    app.vectordb_client = MagicMock()
+    app.generation_client = MagicMock()
+    app.embedding_client = MagicMock()
+    app.template_parser = MagicMock()
+    app.db_client = None
+
+    client = TestClient(app)
+
+    # 1. Arabic greeting with tanween (was failing before fix)
+    res_ar_tanween = client.post("/api/v1/nlp/chat", json={"query": "مرحباً"})
+    assert res_ar_tanween.status_code == 200
+    data = res_ar_tanween.json()
+    assert data["signal"] == "chat_success"
+    assert "NileGuide" in data["message"]
+    assert "أهلاً بك" in data["message"]
+    # Verify LLM generation and embedding were NEVER called
+    app.generation_client.generate_text.assert_not_called()
+    app.embedding_client.embed_text.assert_not_called()
+
+    # 2. Arabic greeting with hamza
+    res_ar_hamza = client.post("/api/v1/nlp/chat", json={"text": "أهلاً وسهلاً"})
+    assert res_ar_hamza.status_code == 200
+    assert res_ar_hamza.json()["signal"] == "chat_success"
+    app.generation_client.generate_text.assert_not_called()
+    app.embedding_client.embed_text.assert_not_called()
+
+    # 3. Arabic greeting with punctuation
+    res_ar_punct = client.post("/api/v1/nlp/chat", json={"text": "مرحبا؟!"})
+    assert res_ar_punct.status_code == 200
+    assert res_ar_punct.json()["signal"] == "chat_success"
+    app.generation_client.generate_text.assert_not_called()
+    app.embedding_client.embed_text.assert_not_called()
+
+    # 4. English greeting
+    res_en = client.post("/api/v1/nlp/chat", json={"text": "Hello there!"})
+    assert res_en.status_code == 200
+    data_en = res_en.json()
+    assert data_en["signal"] == "chat_success"
+    assert "welcome to NileGuide" in data_en["message"]
+    app.generation_client.generate_text.assert_not_called()
+    app.embedding_client.embed_text.assert_not_called()

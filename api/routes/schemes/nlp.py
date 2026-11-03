@@ -14,7 +14,7 @@ class ChatRequest(BaseModel):
     def normalize_text_or_prompt(cls, values):
         if not isinstance(values, dict):
             return values
-        val = values.get("text") or values.get("prompt") or values.get("query")
+        val = values.get("text") or values.get("prompt") or values.get("query") or values.get("message")
         if val is not None:
             values["text"] = str(val)
         return values
