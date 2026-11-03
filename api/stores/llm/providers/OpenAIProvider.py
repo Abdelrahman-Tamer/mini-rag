@@ -3,6 +3,18 @@ from ..LLMEnums import OpenAIEnums
 from openai import OpenAI
 from typing import Any
 import logging
+import uuid
+import re
+
+
+def _sanitize_error_message(msg: str) -> str:
+    """Mask potential credentials or authorization headers from error messages."""
+    if not msg:
+        return ""
+    sanitized = re.sub(r'AIza[0-9A-Za-z-_]{20,}', '[REDACTED_API_KEY]', msg)
+    sanitized = re.sub(r'sk-[0-9A-Za-z-_]{20,}', '[REDACTED_API_KEY]', sanitized)
+    sanitized = re.sub(r'bearer\s+[a-zA-Z0-9_\-\.]+', 'Bearer [REDACTED_TOKEN]', sanitized, flags=re.IGNORECASE)
+    return sanitized
 
 class OpenAIProvider(LLMInterface):
 
@@ -65,6 +77,7 @@ class OpenAIProvider(LLMInterface):
                 self.construct_prompt(prompt=str(prompt or ""), role=OpenAIEnums.USER.value)
             )
 
+        corr_id = uuid.uuid4().hex[:8]
         try:
             response = self.client.chat.completions.create(
                 model = self.generation_model_id,
@@ -73,13 +86,14 @@ class OpenAIProvider(LLMInterface):
                 temperature = temperature
             )
         except Exception as ex:
+            sanitized_err = _sanitize_error_message(str(ex))
             self.logger.error(
-                f"Error calling OpenAI/Gemini chat completions API (model='{self.generation_model_id}'): {type(ex).__name__} - {ex}"
+                f"Error calling OpenAI/Gemini chat completions API [corr_id={corr_id}] (model='{self.generation_model_id}'): {type(ex).__name__} - {sanitized_err}"
             )
             return None
 
         if not response or not response.choices or len(response.choices) == 0 or not response.choices[0].message:
-            self.logger.error("Error while generating text with OpenAI")
+            self.logger.error(f"Error or empty response while generating text with OpenAI [corr_id={corr_id}]")
             return None
 
         return response.choices[0].message.content
@@ -101,19 +115,30 @@ class OpenAIProvider(LLMInterface):
         if self.embedding_size and "ada" not in (self.embedding_model_id or "").lower():
             create_kwargs["dimensions"] = self.embedding_size
 
+        corr_id = uuid.uuid4().hex[:8]
         try:
             response = self.client.embeddings.create(**create_kwargs)
         except Exception as ex:
             if "dimensions" in str(ex).lower() and "dimensions" in create_kwargs:
-                self.logger.warning(f"Embedding API rejected 'dimensions' argument; falling back without it: {ex}")
+                self.logger.warning(
+                    f"Embedding API rejected 'dimensions' argument [corr_id={corr_id}]; falling back without it: {_sanitize_error_message(str(ex))}"
+                )
                 create_kwargs.pop("dimensions", None)
-                response = self.client.embeddings.create(**create_kwargs)
+                try:
+                    response = self.client.embeddings.create(**create_kwargs)
+                except Exception as ex2:
+                    self.logger.error(
+                        f"Error calling OpenAI/Gemini embeddings API on retry [corr_id={corr_id}]: {type(ex2).__name__} - {_sanitize_error_message(str(ex2))}"
+                    )
+                    return None
             else:
-                self.logger.error(f"Error calling OpenAI embeddings API: {ex}")
+                self.logger.error(
+                    f"Error calling OpenAI/Gemini embeddings API [corr_id={corr_id}]: {type(ex).__name__} - {_sanitize_error_message(str(ex))}"
+                )
                 return None
 
         if not response or not response.data or len(response.data) == 0 or not response.data[0].embedding:
-            self.logger.error("Error while embedding text with OpenAI")
+            self.logger.error(f"Error while embedding text with OpenAI [corr_id={corr_id}]")
             return None
 
         return response.data[0].embedding

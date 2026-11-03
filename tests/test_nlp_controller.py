@@ -272,8 +272,47 @@ def test_provider_failure_graceful_fallback_arabic():
     client = TestClient(app)
     res = client.post("/api/v1/nlp/chat", json={"query": "ما هي أفضل أوقات زيارة وادي الملوك؟"})
 
-    assert res.status_code == 200
+    assert res.status_code == 503
     data = res.json()
-    assert data["signal"] == "chat_success"
+    assert data["signal"] == "chat_error"
+    assert data["error"] == "ai_generation_unavailable"
+    assert "error_id" in data
     # Localized Arabic fallback message is provided
-    assert "لم أتمكن" in data["message"] or "NileGuide" in data["message"]
+    assert "غير متاحة" in data["message"]
+
+
+def test_provider_failure_graceful_fallback_english():
+    from fastapi.testclient import TestClient
+    from api.index import app
+    from unittest.mock import MagicMock
+    from helpers.cache import global_response_cache
+
+    global_response_cache.clear()
+
+    app.state.initialized = True
+    app.vectordb_client = MagicMock()
+    app.generation_client = MagicMock()
+    app.embedding_client = MagicMock()
+    app.template_parser = MagicMock()
+    app.db_client = None
+
+    # Simulate empty search results and provider error returning None
+    app.embedding_client.embed_text.return_value = [0.1] * 768
+    app.vectordb_client.search_by_vector.return_value = []
+    app.template_parser.get.return_value = "Mock prompt"
+    app.generation_client.generate_text.return_value = None
+    app.generation_client.construct_prompt.side_effect = lambda prompt, role: {"role": role, "content": prompt}
+    app.generation_client.enums.USER.value = "user"
+    app.generation_client.enums.SYSTEM.value = "system"
+    app.generation_client.enums.ASSISTANT.value = "assistant"
+
+    client = TestClient(app)
+    res = client.post("/api/v1/nlp/chat", json={"query": "What is the best time to visit Karnak Temple?"})
+
+    assert res.status_code == 503
+    data = res.json()
+    assert data["signal"] == "chat_error"
+    assert data["error"] == "ai_generation_unavailable"
+    assert "error_id" in data
+    # Localized English fallback message is provided
+    assert "temporarily unavailable" in data["message"]
