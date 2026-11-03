@@ -180,8 +180,8 @@ def run_diagnostics(redis_url: str) -> bool:
 
     try:
         # Step 1: TLS Connection & Initialization
-        print("\n[Step 1/6] Initializing Redis connection pool with socket timeout (3.0s)...")
-        client = redis.from_url(cleaned_url, socket_timeout=3.0)
+        print("\n[Step 1/6] Initializing Redis connection pool with socket timeout (5.0s)...")
+        client = redis.from_url(cleaned_url, socket_timeout=5.0)
         is_ssl_class = issubclass(client.connection_pool.connection_class, redis.connection.SSLConnection)
         print(f"  Connection Pool Class: {client.connection_pool.connection_class.__name__}")
         print(f"  TLS Configuration:     {'ENABLED (SSLConnection pool)' if is_ssl_class else 'WARNING: TLS NOT ACTIVE (Plaintext Connection)'}")
@@ -194,7 +194,7 @@ def run_diagnostics(redis_url: str) -> bool:
                 print("  PING returned: PONG (Connection Healthy)")
                 # Inspect underlying socket TLS info if available
                 try:
-                    conn = client.connection_pool.get_connection("ping")
+                    conn = client.connection_pool.get_connection()
                     try:
                         conn.connect()
                         sock = getattr(conn, "_sock", None)
