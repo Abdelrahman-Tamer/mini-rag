@@ -1,4 +1,5 @@
 import re
+import unicodedata
 from contextlib import contextmanager
 from typing import Optional, List, Dict, Any, Union
 from .BaseController import BaseController
@@ -217,21 +218,24 @@ class NLPController(BaseController):
     def normalize_text_for_greeting(text: str) -> str:
         if not text:
             return ""
-        s = text.strip().lower()
-        # Strip Arabic diacritics / Tashkeel / Harakat / Tanween (U+064B to U+0652, U+0670)
-        s = re.sub(r'[\u064b-\u0652\u0670]', '', s)
-        # Strip Tatweel / Kashida (U+0640)
-        s = re.sub(r'\u0640', '', s)
-        # Normalize Alef variants (أ, إ, آ, ٱ -> ا)
+        # 1. Unicode NFKC normalization
+        s = unicodedata.normalize("NFKC", text)
+        # 2. Strip Unicode control, format (Cf), zero-width and bidirectional marks (e.g. ZWSP, RLM, LRM, BOM)
+        s = re.sub(r'[ -‏ - ⁠-⁯﻿]', '', s)
+        # 3. Strip Arabic diacritics / Tashkeel / Harakat / Tanween (U+064B to U+0652, U+0670)
+        s = re.sub(r'[ً-ْٰ]', '', s)
+        # 4. Strip Tatweel / Kashida (U+0640)
+        s = re.sub(r'ـ', '', s)
+        # 5. Normalize Alef variants (أ, إ, آ, ٱ -> ا)
         s = re.sub(r'[أإآٱ]', 'ا', s)
-        # Normalize Ta Marbuta (ة -> ه)
+        # 6. Normalize Ta Marbuta (ة -> ه)
         s = re.sub(r'ة', 'ه', s)
-        # Normalize Yaa / Alef Maqsura (ى -> ي)
+        # 7. Normalize Yaa / Alef Maqsura (ى -> ي)
         s = re.sub(r'ى', 'ي', s)
-        # Strip Arabic & English punctuation
-        s = re.sub(r'[?!.,;:؟،؛…!؟\-_\'\"]+', '', s)
-        # Collapse whitespace
-        s = re.sub(r'\s+', ' ', s).strip()
+        # 8. Strip Arabic & Western punctuation, brackets, quotes
+        s = re.sub(r'[?!.,;:؟،؛…!؟\-_\'\"«»()\[\]{}]+', ' ', s)
+        # 9. Collapse whitespace and lowercase
+        s = re.sub(r'\s+', ' ', s).strip().lower()
         return s
 
     def is_greeting_query(self, query: str) -> bool:
@@ -263,14 +267,20 @@ class NLPController(BaseController):
             "السلام عليكم",
             "اهلا وسهلا",
             "مرحبا بك",
+            "مرحبا",
+            "اهلين",
             "صباح الخير",
             "مساء الخير",
         )
         for prefix in greeting_prefixes:
             if norm == prefix or norm.startswith(prefix + " "):
                 rest = norm[len(prefix):].strip()
-                pleasantries = {"ورحمه الله", "ورحمه الله وبركته", "ورحمه الله وبركاته", "يا غالي", "يا صديقي", "عزيزي"}
-                if not rest or rest in pleasantries or (len(rest.split()) <= 3 and any(w in rest for w in ["ورحمه", "بركته", "تعالى"])):
+                pleasantries = {
+                    "ورحمه الله", "ورحمه الله وبركته", "ورحمه الله وبركاته",
+                    "يا غالي", "يا صديقي", "عزيزي", "يا فندم", "جميعا", "بكم", "بك",
+                    "فيكم", "وسهلا", "يا هلا", "كيفك", "كيف الحال"
+                }
+                if not rest or rest in pleasantries or (len(rest.split()) <= 3 and any(w in rest for w in ["ورحمه", "بركته", "تعالى", "فندم", "صديقي", "غالي", "اهلا", "بكم", "بك", "حالك", "حال"])):
                     return True
 
         return False

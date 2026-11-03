@@ -65,12 +65,18 @@ class OpenAIProvider(LLMInterface):
                 self.construct_prompt(prompt=str(prompt or ""), role=OpenAIEnums.USER.value)
             )
 
-        response = self.client.chat.completions.create(
-            model = self.generation_model_id,
-            messages = messages,
-            max_tokens = max_output_tokens,
-            temperature = temperature
-        )
+        try:
+            response = self.client.chat.completions.create(
+                model = self.generation_model_id,
+                messages = messages,
+                max_tokens = max_output_tokens,
+                temperature = temperature
+            )
+        except Exception as ex:
+            self.logger.error(
+                f"Error calling OpenAI/Gemini chat completions API (model='{self.generation_model_id}'): {type(ex).__name__} - {ex}"
+            )
+            return None
 
         if not response or not response.choices or len(response.choices) == 0 or not response.choices[0].message:
             self.logger.error("Error while generating text with OpenAI")

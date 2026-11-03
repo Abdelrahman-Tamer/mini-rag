@@ -211,14 +211,23 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
                     "error_id": error_id
                 }
             )
-        answer = answer or "I couldn't find any relevant information on that topic. Try asking about a different destination!"
+        if not answer:
+            is_ar = any('\u0600' <= char <= '\u06ff' for char in text)
+            if is_ar:
+                answer = "لم أتمكن من العثور على معلومات دقيقة حول هذا الاستفسار حالياً. يرجى تجربة السؤال عن وجهة أو معلم سياحي آخر في مصر!"
+            else:
+                answer = "I couldn't find any relevant information on that topic. Try asking about a different destination!"
+
         if conversation_model and chat_request.conversation_id:
-            await conversation_model.append_turn(
-                conversation_id=chat_request.conversation_id,
-                user_msg=text,
-                assistant_msg=answer,
-                assistant_sources=[]
-            )
+            try:
+                await conversation_model.append_turn(
+                    conversation_id=chat_request.conversation_id,
+                    user_msg=text,
+                    assistant_msg=answer,
+                    assistant_sources=[]
+                )
+            except Exception as conv_err:
+                logger.warning(f"Failed to append turn to conversation: {conv_err}")
         return JSONResponse(
             content={
                 "signal": ResponseSignal.CHAT_SUCCESS.value,

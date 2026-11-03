@@ -1,8 +1,8 @@
 from helpers.config import get_settings
 from helpers.rate_limiter import check_rate_limit
 import uuid
-from helpers.security import verify_admin_access
 from fastapi import FastAPI, APIRouter, status, Request, Query, Depends
+from helpers.security import verify_admin_access
 from fastapi.responses import JSONResponse, StreamingResponse
 from routes.schemes.nlp import ChatRequest, SyncActivityRequest
 from controllers import NLPController
@@ -211,14 +211,23 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
                     "error_id": error_id
                 }
             )
-        answer = answer or "I couldn't find any relevant information on that topic. Try asking about a different destination!"
+        if not answer:
+            is_ar = any('\u0600' <= char <= '\u06ff' for char in text)
+            if is_ar:
+                answer = "لم أتمكن من العثور على معلومات دقيقة حول هذا الاستفسار حالياً. يرجى تجربة السؤال عن وجهة أو معلم سياحي آخر في مصر!"
+            else:
+                answer = "I couldn't find any relevant information on that topic. Try asking about a different destination!"
+
         if conversation_model and chat_request.conversation_id:
-            await conversation_model.append_turn(
-                conversation_id=chat_request.conversation_id,
-                user_msg=text,
-                assistant_msg=answer,
-                assistant_sources=[]
-            )
+            try:
+                await conversation_model.append_turn(
+                    conversation_id=chat_request.conversation_id,
+                    user_msg=text,
+                    assistant_msg=answer,
+                    assistant_sources=[]
+                )
+            except Exception as conv_err:
+                logger.warning(f"Failed to append turn to conversation: {conv_err}")
         return JSONResponse(
             content={
                 "signal": ResponseSignal.CHAT_SUCCESS.value,
@@ -446,3 +455,17 @@ async def reconcile_activities_endpoint(request: Request):
             logger.warning(f"Error syncing activity {act.get('activityID')}: {e}")
 
     return JSONResponse(content={"signal": "reconcile_success", "total_synced": synced_count})
+
+@nlp_router.delete("/conversation/{conversation_id}")
+async def delete_conversation(request: Request, conversation_id: str):
+    conversation_model = await ConversationModel.create_instance(
+        db_client=request.app.db_client
+    )
+    from bson import ObjectId
+    try:
+        oid = ObjectId(conversation_id) if ObjectId.is_valid(conversation_id) else conversation_id
+        res = await conversation_model.collection.delete_one({"_id": oid})
+        return JSONResponse(content={"signal": "conversation_deleted", "conversation_id": conversation_id, "deleted_count": res.deleted_count})
+    except Exception as e:
+        logger.error(f"Error deleting conversation {conversation_id}: {e}")
+        return JSONResponse(status_code=500, content={"error": "delete_failed", "details": str(e)})
