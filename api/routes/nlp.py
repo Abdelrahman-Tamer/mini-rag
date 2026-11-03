@@ -2,7 +2,7 @@ from helpers.config import get_settings
 from helpers.rate_limiter import check_rate_limit
 import uuid
 from helpers.security import verify_admin_access
-from fastapi import FastAPI, APIRouter, status, Request, Query
+from fastapi import FastAPI, APIRouter, status, Request, Query, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
 from routes.schemes.nlp import ChatRequest, SyncActivityRequest
 from controllers import NLPController

@@ -1,0 +1,45 @@
+<#
+.SYNOPSIS
+    Secure execution wrapper for NileGuide Upstash Redis diagnostic.
+.DESCRIPTION
+    Prompts the operator for REDIS_URL using hidden input (-AsSecureString),
+    executes the non-destructive diagnostic suite, and ensures the environment
+    variable is cleared from memory immediately upon completion.
+    Never logs or persists credentials.
+#>
+
+[CmdletBinding()]
+param()
+
+$ErrorActionPreference = "Stop"
+
+Write-Host "======================================================================" -ForegroundColor Cyan
+Write-Host "NileGuide mini-rag — Secure Upstash Connectivity Diagnostic Launcher" -ForegroundColor Cyan
+Write-Host "======================================================================" -ForegroundColor Cyan
+Write-Host "Please paste your Upstash Redis URI (rediss://...)."
+Write-Host "Input will be hidden and will NOT be echoed or logged." -ForegroundColor Yellow
+
+$SecureUrl = Read-Host -Prompt "Upstash REDIS_URL" -AsSecureString
+if ($null -eq $SecureUrl -or $SecureUrl.Length -eq 0) {
+    Write-Warning "No Redis URL provided. Aborting diagnostic."
+    exit 1
+}
+
+$Bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureUrl)
+try {
+    $PlainUrl = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($Bstr)
+    $env:REDIS_URL = $PlainUrl
+    
+    # Run the verified Python diagnostic script
+    python scripts/diagnose_upstash_connectivity.py
+    $ExitCode = $LASTEXITCODE
+}
+finally {
+    # Zero memory and clear environment variable immediately
+    [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($Bstr)
+    Remove-Item Env:\REDIS_URL -ErrorAction SilentlyContinue
+    $PlainUrl = $null
+    [System.GC]::Collect()
+}
+
+exit $ExitCode
