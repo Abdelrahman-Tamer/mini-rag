@@ -1,7 +1,7 @@
 import re
 import unicodedata
 from contextlib import contextmanager
-from typing import Optional, List, Dict, Any, Union
+from typing import Optional, List, Dict, Any, Union, Tuple
 from .BaseController import BaseController
 from stores.llm.LLMEnums import DocumentTypeEnum
 from helpers.cache import global_response_cache
@@ -24,6 +24,24 @@ CITY_MAP = {
     "giza": "Giza", "الجيزة": "Giza", "جيزة": "Giza",
     "dahab": "Dahab", "دهب": "Dahab",
     "siwa": "Siwa", "سيوة": "Siwa",
+}
+
+AR_NUM_WORDS = {
+    "واحد": 1, "واحدة": 1,
+    "اثنين": 2, "اثنان": 2, "اثنتين": 2, "اثنتان": 2,
+    "ثلاثة": 3, "ثلاث": 3,
+    "أربعة": 4, "اربعة": 4, "أربع": 4, "اربع": 4,
+    "خمسة": 5, "خمس": 5,
+    "ستة": 6, "ست": 6,
+    "سبعة": 7, "سبع": 7,
+    "ثمانية": 8, "ثماني": 8, "ثمان": 8,
+    "تسعة": 9, "تسع": 9,
+    "عشرة": 10, "عشر": 10,
+}
+
+EN_NUM_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
 }
 
 class NLPController(BaseController):
@@ -285,6 +303,215 @@ class NLPController(BaseController):
 
         return False
 
+    @staticmethod
+    def _clean_tourism_terminology(text: str) -> str:
+        """
+        Targeted normalization for known Arabic tourism collocations.
+        Replaces accidental phonological/stochastic typos like 'مرشد سياسي' -> 'مرشد سياحي'
+        and 'جولة سياسية' -> 'جولة سياحية' while strictly preserving unrelated political terminology
+        (e.g. 'محلل سياسي', 'قرار سياسي', 'أزمة سياسية', 'حزب سياسي').
+        """
+        if not text or not isinstance(text, str):
+            return text
+
+        # 1. مرشد(ة/ات/ين/ون/...) سياسي(ة/ين/...) -> سياحي(...)
+        pattern_guide = re.compile(
+            r'(?<!\w)([وف]?[بلك]?)?(ال)?مرشد(ة|ات|ين|ون|نا|كم|هم|ه|ي|[ا\u064b\u064c\u064e\u064f\u0650]*)\s+([وف]?[بلك]?)?(ال)?سياسي(ة|ات|ين|ون|[ا\u064b\u064c\u064e\u064f\u0650]*)',
+            re.UNICODE
+        )
+
+        def replace_guide(m):
+            proc1, al1, suf1, proc2, al2, suf2 = m.groups()
+            noun = f"{proc1 or ''}{al1 or ''}مرشد{suf1}"
+            adj = f"{proc2 or ''}{al2 or ''}سياحي{suf2}"
+            return f"{noun} {adj}"
+
+        text = pattern_guide.sub(replace_guide, text)
+
+        # 2. جولة/جولات سياسية -> جولة/جولات سياحية
+        pattern_tour = re.compile(
+            r'(?<!\w)([وف]?[بلك]?)?(ال)?جول(ة|ات|تين|تنا|[ا\u064b\u064c\u064e\u064f\u0650]*)\s+([وف]?[بلك]?)?(ال)?سياسي(ة|ات|تين|[ا\u064b\u064c\u064e\u064f\u0650]*)',
+            re.UNICODE
+        )
+
+        def replace_tour(m):
+            proc1, al1, suf1, proc2, al2, suf2 = m.groups()
+            noun = f"{proc1 or ''}{al1 or ''}جول{suf1}"
+            adj = f"{proc2 or ''}{al2 or ''}سياحي{suf2}"
+            return f"{noun} {adj}"
+
+        text = pattern_tour.sub(replace_tour, text)
+        return text
+
+    @staticmethod
+    def _parse_count_token(token: Optional[str], word_map: dict) -> Optional[int]:
+        if not token:
+            return None
+        token = token.strip()
+        if token.isdigit():
+            return int(token)
+        eastern_digits = {'٠': '0', '١': '1', '٢': '2', '٣': '3', '٤': '4', '٥': '5', '٦': '6', '٧': '7', '٨': '8', '٩': '9'}
+        if any(c in eastern_digits for c in token):
+            ascii_digits = ''.join(eastern_digits.get(c, c) for c in token)
+            if ascii_digits.isdigit():
+                return int(ascii_digits)
+        clean_token = re.sub(r'^[وفبكل]+', '', token)
+        if clean_token in ('نشاط', 'activity', 'tour', 'place', 'مكان', 'خيار', 'option'):
+            return 1
+        if token in word_map:
+            return word_map[token]
+        if clean_token in word_map:
+            return word_map[clean_token]
+        return None
+
+    @classmethod
+    def detect_ranking_intent(cls, query: str) -> Optional[Tuple[str, Optional[int]]]:
+        """
+        Detects explicit price ranking intent and optional requested count from query.
+        Returns:
+            Tuple of ('asc' | 'desc', count | None) if ranking intent is present,
+            or None if no price ranking intent is detected.
+        """
+        if not query or not isinstance(query, str):
+            return None
+        q = query.strip().lower()
+
+        # 1. Arabic Ascending (cheapest, lowest price)
+        m_ar_asc = re.search(
+            r'(?:أرخص|ارخص|أقل\s+سعر|اقل\s+سعر|أقل\s+أسعار|اقل\s+اسعار|أدنى\s+سعر|ادنى\s+سعر)\s*(\d+|[\u0660-\u0669]+|[^\s\.,!؟]+)?',
+            q
+        )
+        if m_ar_asc:
+            token = m_ar_asc.group(1)
+            count = cls._parse_count_token(token, AR_NUM_WORDS)
+            return ('asc', count)
+
+        # 2. Arabic Descending (most expensive, highest price)
+        m_ar_desc = re.search(
+            r'(?:أغلى|اغلى|أعلى\s+سعر|اعلى\s+سعر|أعلى\s+أسعار|اعلى\s+اسعار|أكثر\s+سعر|اكثر\s+سعر)\s*(\d+|[\u0660-\u0669]+|[^\s\.,!؟]+)?',
+            q
+        )
+        if m_ar_desc:
+            token = m_ar_desc.group(1)
+            count = cls._parse_count_token(token, AR_NUM_WORDS)
+            return ('desc', count)
+
+        # 3. English Ascending (cheapest, lowest price, least expensive)
+        m_en_asc = re.search(
+            r'\b(?:cheapest|lowest\s+price|least\s+expensive)\b(?:\s+(\d+|[a-z]+))?',
+            q
+        )
+        if m_en_asc:
+            token = m_en_asc.group(1)
+            count = cls._parse_count_token(token, EN_NUM_WORDS)
+            return ('asc', count)
+
+        # 4. English Descending (most expensive, priciest, highest price)
+        m_en_desc = re.search(
+            r'\b(?:most\s+expensive|priciest|highest\s+price)\b(?:\s+(\d+|[a-z]+))?',
+            q
+        )
+        if m_en_desc:
+            token = m_en_desc.group(1)
+            count = cls._parse_count_token(token, EN_NUM_WORDS)
+            return ('desc', count)
+
+        return None
+
+    @staticmethod
+    def extract_numeric_price(doc) -> Optional[Tuple[float, str]]:
+        """
+        Safely extracts numeric positive price and currency from document metadata.
+        Returns (price_float, currency_code) or None if missing or invalid.
+        """
+        meta = getattr(doc, 'metadata', None)
+        if isinstance(doc, dict):
+            meta = doc.get('metadata', doc)
+        elif not isinstance(meta, dict):
+            meta = {}
+
+        price_val = meta.get('price')
+        min_price_val = meta.get('minPrice')
+        raw_val = price_val if price_val is not None else min_price_val
+        if raw_val is None:
+            return None
+
+        currency = meta.get('priceCurrency') or meta.get('currency') or 'USD'
+        currency = str(currency).strip().upper()
+
+        if isinstance(raw_val, (int, float)):
+            if raw_val >= 0:
+                return float(raw_val), currency
+            return None
+
+        raw_str = str(raw_val).strip()
+        if not raw_str:
+            return None
+
+        raw_upper = raw_str.upper()
+        if any(k in raw_upper for k in ['EGP', 'LE', 'L.E', 'جنيه', 'ج.م']):
+            currency = 'EGP'
+        elif any(k in raw_upper for k in ['EUR', '€']):
+            currency = 'EUR'
+        elif any(k in raw_upper for k in ['GBP', '£']):
+            currency = 'GBP'
+        elif any(k in raw_upper for k in ['USD', '$']):
+            currency = 'USD'
+
+        m = re.search(r'(\d+(?:\.\d+)?)', raw_str)
+        if m:
+            try:
+                num = float(m.group(1))
+                if num >= 0:
+                    return num, currency
+            except (ValueError, TypeError):
+                return None
+        return None
+
+    @classmethod
+    def apply_price_ranking_if_requested(cls, query: str, documents: list, default_limit: int = 5) -> list:
+        """
+        Applies deterministic price ranking to candidate documents when an explicit
+        ranking intent is detected in the query.
+        - Preserves relevance filtering: only operates on the already-filtered relevant candidate set.
+        - Preserves requested count N if specified and available.
+        - Safeguards against mixed currencies without exchange rates.
+        - Retains score order when no ranking intent is present or if currencies conflict.
+        """
+        if not documents:
+            return []
+
+        ranking_intent = cls.detect_ranking_intent(query)
+        if not ranking_intent:
+            return documents[:default_limit]
+
+        direction, count = ranking_intent
+        effective_limit = count if (count and count > 0) else default_limit
+
+        valid_docs = []
+        currencies = set()
+        for doc in documents:
+            p_info = cls.extract_numeric_price(doc)
+            if p_info is not None:
+                price, curr = p_info
+                valid_docs.append((doc, price, curr))
+                currencies.add(curr)
+
+        # Currency conflict guardrail: do not mix-sort different currencies
+        if len(currencies) > 1:
+            logger.warning(f"Conflicting currencies detected in price ranking candidates: {currencies}. Retaining original relevance ordering.")
+            return documents[:effective_limit]
+
+        if not valid_docs:
+            return documents[:effective_limit]
+
+        # Deterministic price sorting
+        reverse = (direction == 'desc')
+        valid_docs.sort(key=lambda item: item[1], reverse=reverse)
+        sorted_docs = [item[0] for item in valid_docs]
+
+        return sorted_docs[:effective_limit]
+
     def chat(self, query: str, limit: int = 5, prior_history: list = None, city: str = None, category: str = None):
         if not query or not query.strip():
             return None
@@ -332,7 +559,12 @@ class NLPController(BaseController):
             return None
 
         results = [doc for doc in results if doc.score >= self.score_threshold]
-        results = self._deduplicate_search_results(results)[:limit]
+        results = self._deduplicate_search_results(results)
+        results = self.apply_price_ranking_if_requested(
+            query=query,
+            documents=results,
+            default_limit=limit,
+        )
         return results if results else None
 
     @staticmethod
@@ -402,7 +634,8 @@ class NLPController(BaseController):
             )
             cached_data = global_response_cache.get(cache_key)
             if cached_data:
-                return cached_data["answer"], cached_data.get("full_prompt", ""), True
+                cached_ans = self._clean_tourism_terminology(cached_data["answer"])
+                return cached_ans, cached_data.get("full_prompt", ""), True
 
         if system_prompt is None:
             system_prompt = self.template_parser.get("rag", "system_prompt")
@@ -414,6 +647,13 @@ class NLPController(BaseController):
         max_input_chars = self.app_settings.INPUT_DEFAULT_MAX_CHARACTERS
         footer_len = len(footer_prompt) if footer_prompt else 0
         doc_budget = max_input_chars - footer_len
+
+        # Ensure retrieved documents adhere to price ranking if ranking intent was detected
+        retrieved_documents = self.apply_price_ranking_if_requested(
+            query=query,
+            documents=retrieved_documents,
+            default_limit=len(retrieved_documents) if retrieved_documents else 5,
+        )
 
         documents_prompts = ""
         for idx, doc in enumerate(retrieved_documents):
@@ -469,6 +709,9 @@ class NLPController(BaseController):
             max_output_tokens=self.app_settings.GENERATION_DEFAULT_MAX_TOKENS,
             temperature=self.app_settings.GENERATION_DEFAULT_TEMPERATURE,
         )
+
+        if answer:
+            answer = self._clean_tourism_terminology(answer)
 
         # Cache standalone results
         if is_standalone and cache_key and answer:
