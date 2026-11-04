@@ -144,6 +144,9 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
         else:
             answer = "Hello and welcome to NileGuide! How can I help you explore Egypt today?"
 
+        if answer:
+            answer = NLPController._clean_tourism_terminology(answer)
+
         if conversation_model and chat_request.conversation_id:
             try:
                 await conversation_model.append_turn(
@@ -238,6 +241,9 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
                 }
             )
 
+        if answer:
+            answer = NLPController._clean_tourism_terminology(answer)
+
         if conversation_model and chat_request.conversation_id:
             try:
                 await conversation_model.append_turn(
@@ -317,6 +323,9 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
                 "sources": sources
             }
         )
+
+    if answer:
+        answer = NLPController._clean_tourism_terminology(answer)
 
     if conversation_model and chat_request.conversation_id:
         await conversation_model.append_turn(
@@ -425,6 +434,9 @@ async def chat_stream_endpoint(request: Request, chat_request: ChatRequest):
             if is_ar
             else "AI response generation is temporarily unavailable. Please try again later."
         )
+
+    if answer:
+        answer = NLPController._clean_tourism_terminology(answer)
 
     if conversation_model and chat_request.conversation_id:
         await conversation_model.append_turn(

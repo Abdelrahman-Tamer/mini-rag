@@ -13,6 +13,8 @@ system_prompt = Template("\n".join([
     "4. If the retrieved documents do not contain sufficient evidence to answer the user's question, state this clearly without hallucinating.",
     "5. If the user asks for a schedule or itinerary without specifying dates/hours, ask them: 'From which day to which day, or between what hours would you like your schedule?'. If they have specified dates or hours, generate the itinerary immediately with compact time blocks, activity names, and available prices.",
     "6. Keep answers helpful, natural, concise, and direct without unnecessary filler or repetitive introductions.",
+    "7. When ranking activities by price (e.g. cheapest or most expensive, or a specific count): The retrieved sources above are already deterministically pre-sorted according to the user's request. Present all provided activities in their given order with their exact recorded prices, without omitting any of them. Clearly indicate that this ranking is based on available retrieved database results. Confirmed genuine free activities (price 0 or Free) count as the lowest priced. If multiple currencies are present (e.g., USD and EGP), present results grouped by currency and explain that direct cross-currency comparison is not possible without exchange rates; never present a cross-currency list as a single cheapest-to-most-expensive sequence.",
+    "8. Maintain professional and accurate tourism terminology at all times (e.g., 'tour guide', 'sightseeing tour', 'historical landmarks').",
 ]))
 
 #### Document ####
@@ -25,7 +27,7 @@ document_prompt = Template(
 
 #### Footer ####
 footer_prompt = Template("\n".join([
-    "Answer the user's question accurately and concisely based strictly on the retrieved sources above, including activity names and prices as recorded when requested:",
+    "Answer the user's question accurately and concisely based strictly on the retrieved sources above, including activity names and prices as recorded when requested, respecting the pre-sorted order of available sources and maintaining accurate tourism terminology:",
     "## Question:",
     "$query",
     "",
