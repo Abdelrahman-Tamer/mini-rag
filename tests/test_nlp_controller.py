@@ -244,6 +244,30 @@ def test_openai_provider_generate_text_exception_handling():
     assert result is None
 
 
+def test_openai_provider_model_fallback_on_503():
+    from api.stores.llm.providers.OpenAIProvider import OpenAIProvider
+    from unittest.mock import MagicMock
+    from openai import APIStatusError
+
+    provider = OpenAIProvider(api_key="test-key", api_url="https://generativelanguage.googleapis.com/v1beta/openai/")
+    provider.set_generation_model("gemini-3.8-flash")
+
+    # Simulate primary model failing with 503, fallback succeeding
+    mock_success_response = MagicMock()
+    mock_success_response.choices = [MagicMock(message=MagicMock(content="Fallback response"))]
+
+    def mock_create(model, **kwargs):
+        if "3.8" in model:
+            raise APIStatusError("High demand 503", response=MagicMock(status_code=503), body={})
+        return mock_success_response
+
+    provider.client.chat.completions.create = MagicMock(side_effect=mock_create)
+
+    result = provider.generate_text("test prompt")
+    assert result == "Fallback response"
+    assert provider.client.chat.completions.create.call_count == 2
+
+
 def test_provider_failure_graceful_fallback_arabic():
     from fastapi.testclient import TestClient
     from api.index import app

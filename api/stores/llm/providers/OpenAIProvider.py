@@ -21,7 +21,8 @@ class OpenAIProvider(LLMInterface):
     def __init__(self, api_key: str, api_url: str=None,
                     default_input_max_characters: int=1000,
                     default_generation_max_output_tokens: int=1000,
-                    default_generation_temperature: float=0.1):
+                    default_generation_temperature: float=0.1,
+                    timeout: float = 15.0):
         
         self.api_key = api_key
         self.api_url = api_url
@@ -29,6 +30,7 @@ class OpenAIProvider(LLMInterface):
         self.default_input_max_characters = default_input_max_characters
         self.default_generation_max_output_tokens = default_generation_max_output_tokens
         self.default_generation_temperature = default_generation_temperature
+        self.timeout = timeout
 
         self.generation_model_id = None
 
@@ -37,7 +39,8 @@ class OpenAIProvider(LLMInterface):
 
         self.client = OpenAI(
             api_key = self.api_key,
-            base_url = self.api_url if self.api_url and len(self.api_url) else None
+            base_url = self.api_url if self.api_url and len(self.api_url) else None,
+            timeout = self.timeout
         )
 
         self.enums = OpenAIEnums
@@ -78,25 +81,43 @@ class OpenAIProvider(LLMInterface):
             )
 
         corr_id = uuid.uuid4().hex[:8]
-        try:
-            response = self.client.chat.completions.create(
-                model = self.generation_model_id,
-                messages = messages,
-                max_tokens = max_output_tokens,
-                temperature = temperature
-            )
-        except Exception as ex:
-            sanitized_err = _sanitize_error_message(str(ex))
-            self.logger.error(
-                f"Error calling OpenAI/Gemini chat completions API [corr_id={corr_id}] (model='{self.generation_model_id}'): {type(ex).__name__} - {sanitized_err}"
-            )
-            return None
 
-        if not response or not response.choices or len(response.choices) == 0 or not response.choices[0].message:
-            self.logger.error(f"Error or empty response while generating text with OpenAI [corr_id={corr_id}]")
-            return None
+        # Build resilient model failover list (Active-Passive Redundancy)
+        models_to_try = [self.generation_model_id]
+        if "gemini" in (self.generation_model_id or "").lower():
+            if "3.8" in self.generation_model_id:
+                models_to_try.append("gemini-3.5-flash-lite")
+            elif "3.5" in self.generation_model_id:
+                models_to_try.append("gemini-3.8-flash")
+            else:
+                models_to_try.append("gemini-3.5-flash-lite")
 
-        return response.choices[0].message.content
+        for idx, target_model in enumerate(models_to_try):
+            try:
+                response = self.client.chat.completions.create(
+                    model = target_model,
+                    messages = messages,
+                    max_tokens = max_output_tokens,
+                    temperature = temperature
+                )
+                if response and response.choices and len(response.choices) > 0 and response.choices[0].message:
+                    if idx > 0:
+                        self.logger.info(
+                            f"Model fallback succeeded [corr_id={corr_id}]: primary '{models_to_try[0]}' -> fallback '{target_model}'"
+                        )
+                    return response.choices[0].message.content
+            except Exception as ex:
+                sanitized_err = _sanitize_error_message(str(ex))
+                if idx < len(models_to_try) - 1:
+                    self.logger.warning(
+                        f"Model '{target_model}' unavailable [corr_id={corr_id}]: {type(ex).__name__} - {sanitized_err}. Attempting automatic fallback to '{models_to_try[idx+1]}'..."
+                    )
+                else:
+                    self.logger.error(
+                        f"Error calling OpenAI/Gemini chat completions API [corr_id={corr_id}] (model='{target_model}'): {type(ex).__name__} - {sanitized_err}"
+                    )
+
+        return None
 
     def embed_text(self, text: str, document_type: str = None):
         

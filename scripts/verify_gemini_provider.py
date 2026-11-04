@@ -211,7 +211,7 @@ def main():
     )
     model_id = (
         os.environ.get("GENERATION_MODEL_ID")
-        or "gemini-3.8-flash"
+        or "gemini-3.5-flash-lite"
     )
 
     print("=" * 70)

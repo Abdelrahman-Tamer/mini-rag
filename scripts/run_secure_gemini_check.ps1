@@ -10,7 +10,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$ModelId = "gemini-3.8-flash",
+    [string]$ModelId = "gemini-3.5-flash-lite",
     [string]$BaseUrl = "https://generativelanguage.googleapis.com/v1beta/openai/"
 )
 
