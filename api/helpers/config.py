@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     SCORE_THRESHOLD: float = 0.2
 
     # Internal server-to-server admin service credentials.
+    # NEVER defaulted to predictable credentials in production.
     ADMIN_API_KEY: Optional[str] = None
     SYNC_API_KEY: Optional[str] = None
     DEV_ALLOW_DEFAULT_KEY: bool = False
@@ -69,6 +70,10 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 def validate_admin_security_config(settings: Settings) -> None:
+    """
+    Validates required administrative security credentials at startup.
+    Fails closed in production if required keys are missing or set to insecure predictable defaults.
+    """
     env = (settings.ENVIRONMENT or "development").strip().lower()
     is_prod = env in ("production", "prod", "staging")
 

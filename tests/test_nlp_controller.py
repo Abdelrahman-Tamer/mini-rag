@@ -244,28 +244,134 @@ def test_openai_provider_generate_text_exception_handling():
     assert result is None
 
 
-def test_openai_provider_model_fallback_on_503():
+def test_openai_provider_primary_success():
+    from api.stores.llm.providers.OpenAIProvider import OpenAIProvider
+    from unittest.mock import MagicMock
+
+    provider = OpenAIProvider(api_key="test-key", api_url="https://generativelanguage.googleapis.com/v1beta/openai/")
+    provider.set_generation_model("gemini-3.5-flash-lite")
+
+    mock_resp = MagicMock()
+    mock_resp.choices = [MagicMock(message=MagicMock(content="Primary model response"))]
+    provider.client.chat.completions.create = MagicMock(return_value=mock_resp)
+
+    result = provider.generate_text("test prompt")
+    assert result == "Primary model response"
+    assert provider.client.chat.completions.create.call_count == 1
+    call_args = provider.client.chat.completions.create.call_args[1]
+    assert call_args["model"] == "gemini-3.5-flash-lite"
+
+
+def test_openai_provider_transient_failure_fallback_success():
     from api.stores.llm.providers.OpenAIProvider import OpenAIProvider
     from unittest.mock import MagicMock
     from openai import APIStatusError
 
     provider = OpenAIProvider(api_key="test-key", api_url="https://generativelanguage.googleapis.com/v1beta/openai/")
-    provider.set_generation_model("gemini-3.8-flash")
+    provider.set_generation_model("gemini-3.5-flash-lite")
 
-    # Simulate primary model failing with 503, fallback succeeding
-    mock_success_response = MagicMock()
-    mock_success_response.choices = [MagicMock(message=MagicMock(content="Fallback response"))]
+    mock_fallback_resp = MagicMock()
+    mock_fallback_resp.choices = [MagicMock(message=MagicMock(content="Verified fallback response"))]
 
     def mock_create(model, **kwargs):
-        if "3.8" in model:
-            raise APIStatusError("High demand 503", response=MagicMock(status_code=503), body={})
-        return mock_success_response
+        if model == "gemini-3.5-flash-lite":
+            raise APIStatusError("503 High Demand", response=MagicMock(status_code=503), body={})
+        return mock_fallback_resp
 
     provider.client.chat.completions.create = MagicMock(side_effect=mock_create)
 
     result = provider.generate_text("test prompt")
-    assert result == "Fallback response"
+    assert result == "Verified fallback response"
     assert provider.client.chat.completions.create.call_count == 2
+    first_call_model = provider.client.chat.completions.create.call_args_list[0][1]["model"]
+    second_call_model = provider.client.chat.completions.create.call_args_list[1][1]["model"]
+    assert first_call_model == "gemini-3.5-flash-lite"
+    assert second_call_model == "gemini-3.5-flash"
+
+
+def test_openai_provider_timeout_fallback_success():
+    from api.stores.llm.providers.OpenAIProvider import OpenAIProvider
+    from unittest.mock import MagicMock
+    from openai import APITimeoutError
+
+    provider = OpenAIProvider(api_key="test-key", api_url="https://generativelanguage.googleapis.com/v1beta/openai/")
+    provider.set_generation_model("gemini-3.5-flash-lite")
+
+    mock_fallback_resp = MagicMock()
+    mock_fallback_resp.choices = [MagicMock(message=MagicMock(content="Fallback response after timeout"))]
+
+    def mock_create(model, **kwargs):
+        if model == "gemini-3.5-flash-lite":
+            raise APITimeoutError(request=MagicMock())
+        return mock_fallback_resp
+
+    provider.client.chat.completions.create = MagicMock(side_effect=mock_create)
+
+    result = provider.generate_text("test prompt")
+    assert result == "Fallback response after timeout"
+    assert provider.client.chat.completions.create.call_count == 2
+
+
+def test_openai_provider_non_retryable_client_error_no_fallback():
+    from api.stores.llm.providers.OpenAIProvider import OpenAIProvider
+    from unittest.mock import MagicMock
+    from openai import AuthenticationError, BadRequestError, PermissionDeniedError
+
+    provider = OpenAIProvider(api_key="test-key", api_url="https://generativelanguage.googleapis.com/v1beta/openai/")
+    provider.set_generation_model("gemini-3.5-flash-lite")
+
+    # 400 BadRequest / INVALID_ARGUMENT must NOT call fallback
+    provider.client.chat.completions.create = MagicMock(
+        side_effect=BadRequestError("Please pass a valid API key (INVALID_ARGUMENT)", response=MagicMock(status_code=400), body={})
+    )
+    result = provider.generate_text("test prompt")
+    assert result is None
+    assert provider.client.chat.completions.create.call_count == 1
+
+    # 401 AuthenticationError must NOT call fallback
+    provider.client.chat.completions.create = MagicMock(
+        side_effect=AuthenticationError("Invalid API Key", response=MagicMock(status_code=401), body={})
+    )
+    result = provider.generate_text("test prompt")
+    assert result is None
+    assert provider.client.chat.completions.create.call_count == 1
+
+    # 403 PermissionDeniedError must NOT call fallback
+    provider.client.chat.completions.create = MagicMock(
+        side_effect=PermissionDeniedError("Project billing inactive", response=MagicMock(status_code=403), body={})
+    )
+    result = provider.generate_text("test prompt")
+    assert result is None
+    assert provider.client.chat.completions.create.call_count == 1
+
+
+def test_openai_provider_both_models_unavailable():
+    from api.stores.llm.providers.OpenAIProvider import OpenAIProvider
+    from unittest.mock import MagicMock
+    from openai import APIStatusError
+
+    provider = OpenAIProvider(api_key="test-key", api_url="https://generativelanguage.googleapis.com/v1beta/openai/")
+    provider.set_generation_model("gemini-3.5-flash-lite")
+
+    provider.client.chat.completions.create = MagicMock(
+        side_effect=APIStatusError("High demand 503", response=MagicMock(status_code=503), body={})
+    )
+
+    result = provider.generate_text("test prompt")
+    assert result is None
+    assert provider.client.chat.completions.create.call_count == 2
+
+
+def test_openai_provider_sanitized_error_logging():
+    from api.stores.llm.providers.OpenAIProvider import _sanitize_error_message
+
+    raw_err = "Failed with key AIzaSyTestKey1234567890abcdef and token sk-1234567890abcdefghijklmn and Authorization: Bearer secret-token-xyz"
+    sanitized = _sanitize_error_message(raw_err)
+    assert "AIzaSy" not in sanitized
+    assert "sk-" not in sanitized
+    assert "secret-token-xyz" not in sanitized
+    assert "[REDACTED_API_KEY]" in sanitized
+    assert "[REDACTED_TOKEN]" in sanitized
 
 
 def test_provider_failure_graceful_fallback_arabic():

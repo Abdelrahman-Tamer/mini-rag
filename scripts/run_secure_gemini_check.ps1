@@ -11,6 +11,7 @@
 [CmdletBinding()]
 param(
     [string]$ModelId = "gemini-3.5-flash-lite",
+    [string]$FallbackModelId = "gemini-3.5-flash",
     [string]$BaseUrl = "https://generativelanguage.googleapis.com/v1beta/openai/"
 )
 
@@ -19,8 +20,9 @@ $ErrorActionPreference = "Stop"
 Write-Host "======================================================================" -ForegroundColor Cyan
 Write-Host "NileGuide mini-rag -- Secure Gemini Provider Diagnostic Launcher" -ForegroundColor Cyan
 Write-Host "======================================================================" -ForegroundColor Cyan
-Write-Host "Target Model   : $ModelId"
-Write-Host "Target Base URL: $BaseUrl"
+Write-Host "Primary Model       : $ModelId"
+Write-Host "Fallback Candidate  : $FallbackModelId"
+Write-Host "Target Base URL     : $BaseUrl"
 Write-Host "Please paste your Google Gemini API Key."
 Write-Host "Input will be hidden and will NOT be echoed, logged, or saved to disk." -ForegroundColor Yellow
 
@@ -45,6 +47,7 @@ try {
     $env:OPENAI_API_KEY = $PlainKey
     $env:OPENAI_API_URL = $BaseUrl
     $env:GENERATION_MODEL_ID = $ModelId
+    $env:FALLBACK_MODEL_ID = $FallbackModelId
 
     Write-Host "`nExecuting verification suite..." -ForegroundColor Green
     python scripts/verify_gemini_provider.py
@@ -62,6 +65,7 @@ finally {
     Remove-Item Env:\OPENAI_API_KEY -ErrorAction SilentlyContinue
     Remove-Item Env:\OPENAI_API_URL -ErrorAction SilentlyContinue
     Remove-Item Env:\GENERATION_MODEL_ID -ErrorAction SilentlyContinue
+    Remove-Item Env:\FALLBACK_MODEL_ID -ErrorAction SilentlyContinue
     $PlainKey = $null
     [System.GC]::Collect()
 }
