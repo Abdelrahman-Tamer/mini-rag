@@ -51,7 +51,7 @@ class OpenAIProvider(LLMInterface):
                     default_input_max_characters: int=1000,
                     default_generation_max_output_tokens: int=1000,
                     default_generation_temperature: float=0.1,
-                    timeout: float = 20.0):
+                    timeout: float = 7.0):
         
         self.api_key = api_key
         self.api_url = api_url
@@ -69,7 +69,8 @@ class OpenAIProvider(LLMInterface):
         self.client = OpenAI(
             api_key = self.api_key,
             base_url = self.api_url if self.api_url and len(self.api_url) else None,
-            timeout = self.timeout
+            timeout = self.timeout,
+            max_retries = 0
         )
 
         self.enums = OpenAIEnums
