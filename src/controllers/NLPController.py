@@ -335,6 +335,56 @@ class NLPController(BaseController):
         results = self._deduplicate_search_results(results)[:limit]
         return results if results else None
 
+    @staticmethod
+    def _format_document_context(doc) -> str:
+        """
+        Enriches retrieved document text with structured metadata
+        (activity_id, title, city, category, price) when present.
+        Safely handles missing metadata, None values, or non-dict structures.
+        """
+        raw_text = getattr(doc, "text", "") or ""
+        if not isinstance(raw_text, str):
+            raw_text = str(raw_text)
+        raw_text = raw_text.strip()
+
+        meta = getattr(doc, "metadata", None)
+        if not isinstance(meta, dict):
+            return raw_text
+
+        activity_lines = []
+        act_id = meta.get("activity_id")
+        if act_id is None:
+            act_id = meta.get("activityID")
+        if act_id is not None and str(act_id).strip():
+            activity_lines.append(f"- Activity ID: {str(act_id).strip()}")
+
+        title = meta.get("title") or meta.get("activityName")
+        if title and str(title).strip():
+            activity_lines.append(f"- Title: {str(title).strip()}")
+
+        city = meta.get("city") or meta.get("cityName")
+        if city and str(city).strip():
+            activity_lines.append(f"- City: {str(city).strip()}")
+
+        category = meta.get("category") or meta.get("categoryName")
+        if category and str(category).strip():
+            activity_lines.append(f"- Category: {str(category).strip()}")
+
+        price = meta.get("price")
+        if price is None and meta.get("minPrice") is not None:
+            curr = meta.get("priceCurrency", "USD")
+            price = f"{meta.get('minPrice')} {curr}".strip()
+        if price is not None and str(price).strip():
+            activity_lines.append(f"- Price: {str(price).strip()}")
+
+        if not activity_lines:
+            return raw_text
+
+        meta_block = "Activity:\n" + "\n".join(activity_lines)
+        if raw_text:
+            return f"{meta_block}\n\nDescription:\n{raw_text}"
+        return meta_block
+
     def generate_chat_answer(self, query: str, retrieved_documents: list, prior_history: list = None, system_prompt: str = None):
         is_ar = any('\u0600' <= char <= '\u06ff' for char in query)
         detected_lang = "ar" if is_ar else "en"
@@ -367,9 +417,10 @@ class NLPController(BaseController):
 
         documents_prompts = ""
         for idx, doc in enumerate(retrieved_documents):
+            chunk_text = self._format_document_context(doc)
             doc_prompt = self.template_parser.get("rag", "document_prompt", {
                 "doc_num": idx + 1,
-                "chunk_text": doc.text,
+                "chunk_text": chunk_text,
                 "score": round(doc.score, 3),
             })
             if not doc_prompt:
