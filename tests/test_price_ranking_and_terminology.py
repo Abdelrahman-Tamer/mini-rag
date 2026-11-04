@@ -60,7 +60,7 @@ def test_scenario_2_descending_price_ranking():
         MockDocument(43, "جولة مسائية", "40.0 USD", 0.789),
     ]
 
-    query = "اعرض أغلى 2 أنشطة في الجيزة"
+    query = "اعرض أغلى نشاطين من النتائج المتاحة لزيارة الأهرامات والمتحف"
     ranked = NLPController.apply_price_ranking_if_requested(query, docs, default_limit=5)
 
     assert len(ranked) == 2
@@ -276,6 +276,9 @@ def test_scenario_10_byte_for_byte_parity():
         ("api/routes/nlp.py", "src/routes/nlp.py"),
         ("api/stores/llm/templates/locales/ar/rag.py", "src/stores/llm/templates/locales/ar/rag.py"),
         ("api/stores/llm/templates/locales/en/rag.py", "src/stores/llm/templates/locales/en/rag.py"),
+        ("api/stores/llm/providers/OpenAIProvider.py", "src/stores/llm/providers/OpenAIProvider.py"),
+        ("api/stores/llm/LLMProviderFactory.py", "src/stores/llm/LLMProviderFactory.py"),
+        ("api/helpers/config.py", "src/helpers/config.py"),
     ]
 
     for api_file, src_file in files_to_check:

@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     INPUT_DEFAULT_MAX_CHARACTERS: Optional[int] = 4096
     GENERATION_DEFAULT_MAX_TOKENS: Optional[int] = 1000
     GENERATION_DEFAULT_TEMPERATURE: Optional[float] = 0.2
+    GENERATION_TIMEOUT: float = Field(default=20.0, validation_alias=AliasChoices("GENERATION_TIMEOUT", "LLM_TIMEOUT"))
 
     VECTOR_DB_BACKEND: str = "QDRANT"
     QDRANT_DB_URL: str = Field(default="", validation_alias=AliasChoices("QDRANT_DB_URL", "QDRANT_URL"))

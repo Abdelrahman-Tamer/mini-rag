@@ -358,6 +358,8 @@ class NLPController(BaseController):
         clean_token = re.sub(r'^[وفبكل]+', '', token)
         if clean_token in ('نشاط', 'activity', 'tour', 'place', 'مكان', 'خيار', 'option'):
             return 1
+        if clean_token in ('نشاطين', 'نشاطان', 'جولتين', 'جولتان', 'رحلتين', 'رحلتان', 'مكانين', 'مكانان', 'خيارين', 'خياران'):
+            return 2
         if token in word_map:
             return word_map[token]
         if clean_token in word_map:
