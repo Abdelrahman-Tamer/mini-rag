@@ -51,7 +51,7 @@ class OpenAIProvider(LLMInterface):
                     default_input_max_characters: int=1000,
                     default_generation_max_output_tokens: int=1000,
                     default_generation_temperature: float=0.1,
-                    timeout: float = 7.0):
+                    timeout: float = 20.0):
         
         self.api_key = api_key
         self.api_url = api_url
