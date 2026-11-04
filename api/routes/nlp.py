@@ -1,8 +1,8 @@
 from helpers.config import get_settings
 from helpers.rate_limiter import check_rate_limit
 import uuid
-from helpers.security import verify_admin_access
 from fastapi import FastAPI, APIRouter, status, Request, Query, Depends
+from helpers.security import verify_admin_access
 from fastapi.responses import JSONResponse, StreamingResponse
 from routes.schemes.nlp import ChatRequest, SyncActivityRequest
 from controllers import NLPController
@@ -202,23 +202,52 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
         except Exception as e:
             error_id = uuid.uuid4().hex[:8]
             logger.error(f"Error during fallback generation [error_id={error_id}]: {traceback.format_exc()}")
+            is_ar = any('\u0600' <= char <= '\u06ff' for char in text)
+            msg = (
+                "خدمة الذكاء الاصطناعي لتوليد النصائح السياحية غير متاحة مؤقتاً. يرجى المحاولة لاحقاً."
+                if is_ar
+                else "AI travel advice generation is temporarily unavailable. Please try again later."
+            )
             return JSONResponse(
-                status_code=500,
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 content={
                     "signal": ResponseSignal.CHAT_ERROR.value,
-                    "error": "fallback_generation_failed",
-                    "message": "An error occurred while generating travel advice. Please try again later.",
-                    "error_id": error_id
+                    "error": "ai_generation_unavailable",
+                    "message": msg,
+                    "error_id": error_id,
+                    "sources": []
                 }
             )
-        answer = answer or "I couldn't find any relevant information on that topic. Try asking about a different destination!"
-        if conversation_model and chat_request.conversation_id:
-            await conversation_model.append_turn(
-                conversation_id=chat_request.conversation_id,
-                user_msg=text,
-                assistant_msg=answer,
-                assistant_sources=[]
+        if not answer:
+            error_id = uuid.uuid4().hex[:8]
+            logger.error(f"Fallback generation returned empty answer or provider failed [error_id={error_id}]")
+            is_ar = any('\u0600' <= char <= '\u06ff' for char in text)
+            msg = (
+                "خدمة الذكاء الاصطناعي لتوليد النصائح السياحية غير متاحة مؤقتاً. يرجى المحاولة لاحقاً."
+                if is_ar
+                else "AI travel advice generation is temporarily unavailable. Please try again later."
             )
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={
+                    "signal": ResponseSignal.CHAT_ERROR.value,
+                    "error": "ai_generation_unavailable",
+                    "message": msg,
+                    "error_id": error_id,
+                    "sources": []
+                }
+            )
+
+        if conversation_model and chat_request.conversation_id:
+            try:
+                await conversation_model.append_turn(
+                    conversation_id=chat_request.conversation_id,
+                    user_msg=text,
+                    assistant_msg=answer,
+                    assistant_sources=[]
+                )
+            except Exception as conv_err:
+                logger.warning(f"Failed to append turn to conversation: {conv_err}")
         return JSONResponse(
             content={
                 "signal": ResponseSignal.CHAT_SUCCESS.value,
@@ -252,21 +281,40 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
     except Exception as e:
         error_id = uuid.uuid4().hex[:8]
         logger.error(f"Error during generate_chat_answer [error_id={error_id}]: {traceback.format_exc()}")
+        is_ar = any('\u0600' <= char <= '\u06ff' for char in text)
+        msg = (
+            "خدمة الذكاء الاصطناعي لتوليد الردود غير متاحة مؤقتاً. يرجى المحاولة لاحقاً."
+            if is_ar
+            else "AI response generation is temporarily unavailable. Please try again later."
+        )
         return JSONResponse(
-            status_code=500,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             content={
                 "signal": ResponseSignal.CHAT_ERROR.value,
-                "error": "chat_generation_failed",
-                "message": "An error occurred while generating travel response. Please try again later.",
-                "error_id": error_id
+                "error": "ai_generation_unavailable",
+                "message": msg,
+                "error_id": error_id,
+                "sources": sources
             }
         )
 
     if not answer:
+        error_id = uuid.uuid4().hex[:8]
+        logger.error(f"Chat generation returned empty answer or provider failed [error_id={error_id}]")
+        is_ar = any('\u0600' <= char <= '\u06ff' for char in text)
+        msg = (
+            "خدمة الذكاء الاصطناعي لتوليد الردود غير متاحة مؤقتاً. يرجى المحاولة لاحقاً."
+            if is_ar
+            else "AI response generation is temporarily unavailable. Please try again later."
+        )
         return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             content={
                 "signal": ResponseSignal.CHAT_ERROR.value,
-                "message": "I encountered an error while generating a response. Please try again.",
+                "error": "ai_generation_unavailable",
+                "message": msg,
+                "error_id": error_id,
+                "sources": sources
             }
         )
 
@@ -359,12 +407,24 @@ async def chat_stream_endpoint(request: Request, chat_request: ChatRequest):
         for doc in results
     ]
 
-    answer, _, _ = nlp_controller.generate_chat_answer(
-        query=text,
-        retrieved_documents=results,
-        prior_history=prior_history,
-    )
-    answer = answer or "No results found."
+    try:
+        answer, _, _ = nlp_controller.generate_chat_answer(
+            query=text,
+            retrieved_documents=results,
+            prior_history=prior_history,
+        )
+    except Exception as e:
+        error_id = uuid.uuid4().hex[:8]
+        logger.error(f"Error during streaming generate_chat_answer [error_id={error_id}]: {traceback.format_exc()}")
+        answer = None
+
+    if not answer:
+        is_ar = any('\u0600' <= char <= '\u06ff' for char in text)
+        answer = (
+            "خدمة الذكاء الاصطناعي لتوليد الردود غير متاحة مؤقتاً. يرجى المحاولة لاحقاً."
+            if is_ar
+            else "AI response generation is temporarily unavailable. Please try again later."
+        )
 
     if conversation_model and chat_request.conversation_id:
         await conversation_model.append_turn(
@@ -446,3 +506,17 @@ async def reconcile_activities_endpoint(request: Request):
             logger.warning(f"Error syncing activity {act.get('activityID')}: {e}")
 
     return JSONResponse(content={"signal": "reconcile_success", "total_synced": synced_count})
+
+@nlp_router.delete("/conversation/{conversation_id}")
+async def delete_conversation(request: Request, conversation_id: str):
+    conversation_model = await ConversationModel.create_instance(
+        db_client=request.app.db_client
+    )
+    from bson import ObjectId
+    try:
+        oid = ObjectId(conversation_id) if ObjectId.is_valid(conversation_id) else conversation_id
+        res = await conversation_model.collection.delete_one({"_id": oid})
+        return JSONResponse(content={"signal": "conversation_deleted", "conversation_id": conversation_id, "deleted_count": res.deleted_count})
+    except Exception as e:
+        logger.error(f"Error deleting conversation {conversation_id}: {e}")
+        return JSONResponse(status_code=500, content={"error": "delete_failed", "details": str(e)})
