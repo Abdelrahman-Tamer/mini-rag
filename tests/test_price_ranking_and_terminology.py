@@ -94,43 +94,54 @@ def test_scenario_3_count_preservation_and_insufficient_candidates():
 
 def test_scenario_4_missing_and_invalid_price_handling():
     """
-    Scenario 4: Candidates with missing, None, zero, or non-numeric prices.
-    Must not crash; invalid prices excluded from numeric ranking.
+    Scenario 4: Distinguish explicit zero-price / genuine free activities
+    from unconfirmed / missing prices.
+    - Confirmed free activities ('Free', '0.0', 'مجاني') rank as cheapest (0.0).
+    - Missing / unconfirmed prices (None, 'Contact us', 'غير محدد') are excluded.
     """
     docs = [
-        MockDocument(1, "نشاط بسعر", "30.0 USD", 0.9),
+        MockDocument(1, "نشاط بسعر عادي", "30.0 USD", 0.9),
         MockDocument(2, "نشاط بدون سعر", None, 0.85),
-        MockDocument(3, "نشاط بسعر مجاني", "Free", 0.82),
-        MockDocument(4, "نشاط آخر بسعر", "10.0 USD", 0.80),
+        MockDocument(3, "نشاط مجاني مؤكد", "Free", 0.82),
+        MockDocument(4, "نشاط مخفض", "10.0 USD", 0.80),
         MockDocument(5, "نشاط بسعر غير محدد", "Contact us", 0.75),
     ]
 
+    # User asks for cheapest 2 activities:
+    # Ranked ascending: Doc 3 (Free / 0.0 USD) first, Doc 4 (10.0 USD) second.
+    # Doc 1 (30.0 USD) is 3rd; Doc 2 (None) and Doc 5 (Contact us) are excluded.
     query = "اعرض أرخص نشاطين"
     ranked = NLPController.apply_price_ranking_if_requested(query, docs, default_limit=5)
 
     assert len(ranked) == 2
-    assert [d.doc_id for d in ranked] == [4, 1]
-    assert [NLPController.extract_numeric_price(d)[0] for d in ranked] == [10.0, 30.0]
+    assert [d.doc_id for d in ranked] == [3, 4]
+    assert [NLPController.extract_numeric_price(d)[0] for d in ranked] == [0.0, 10.0]
 
 
 def test_scenario_5_mixed_currency_safety():
     """
     Scenario 5: Mixed currencies guardrail.
     If candidates have conflicting currencies without a trusted conversion rate,
-    do not sort blindly across currencies; fall back to original relevance order.
+    never present raw vector similarity order as cheapest-to-most-expensive.
+    Group candidates by currency and sort deterministically within each currency group.
     """
     docs = [
-        MockDocument(1, "جولة بالدولار", "50 USD", 0.95),
-        MockDocument(2, "جولة بالجنيه", "200 EGP", 0.90),
-        MockDocument(3, "جولة أخرى بالدولار", "20 USD", 0.85),
+        MockDocument(1, "جولة بالدولار A", "50 USD", 0.95),
+        MockDocument(2, "جولة بالجنيه المصري", "200 EGP", 0.90),
+        MockDocument(3, "جولة بالدولار B", "20 USD", 0.85),
     ]
 
     query = "أرخص 3 أنشطة"
     ranked = NLPController.apply_price_ranking_if_requested(query, docs, default_limit=3)
 
-    # Mixed USD and EGP detected -> should NOT mix-sort -> retains original relevance order
+    # In USD group: Doc 3 ($20 USD) comes before Doc 1 ($50 USD).
+    # In EGP group: Doc 2 (200 EGP).
+    # Results are grouped and sorted by currency, NEVER in raw similarity order [1, 2, 3].
     assert len(ranked) == 3
-    assert [d.doc_id for d in ranked] == [1, 2, 3]
+    assert [d.doc_id for d in ranked] == [3, 1, 2]
+    assert NLPController.extract_numeric_price(ranked[0])[0] == 20.0
+    assert NLPController.extract_numeric_price(ranked[1])[0] == 50.0
+    assert NLPController.extract_numeric_price(ranked[2])[0] == 200.0
 
 
 def test_scenario_6_relevance_filtering_preserved():
@@ -283,3 +294,61 @@ def test_scenario_10_byte_for_byte_parity():
 
     for api_file, src_file in files_to_check:
         assert filecmp.cmp(api_file, src_file, shallow=False), f"Parity mismatch between {api_file} and {src_file}"
+
+
+def test_scenario_11_explicit_zero_price_and_free_activities():
+    """
+    Scenario 11: Explicit zero-price and genuine free activities.
+    - 'Free', 'مجاني', 'دخول مجاني', 0, 0.0, '0 USD' extract as price 0.0.
+    - Missing prices (None, 'Contact for price', 'غير محدد') extract as None.
+    - Free activities rank as the cheapest in ascending order.
+    - Free activities rank as lowest in descending order.
+    """
+    # 1. Extraction checks
+    free_cases = [
+        ({"price": "Free"}, 0.0, "USD"),
+        ({"price": "مجاني"}, 0.0, "USD"),
+        ({"price": "دخول مجاني"}, 0.0, "USD"),
+        ({"price": 0}, 0.0, "USD"),
+        ({"price": 0.0}, 0.0, "USD"),
+        ({"price": "0.0 USD"}, 0.0, "USD"),
+        ({"price": "0 EGP"}, 0.0, "EGP"),
+    ]
+    for meta, exp_p, exp_c in free_cases:
+        doc = MockDocument(1, "Free Place", meta["price"], 0.9)
+        doc.metadata = meta
+        extracted = NLPController.extract_numeric_price(doc)
+        assert extracted is not None, f"Failed for {meta}"
+        assert extracted[0] == exp_p
+        assert extracted[1] == exp_c
+
+    missing_cases = [
+        {"price": None},
+        {"price": ""},
+        {"price": "Contact for price"},
+        {"price": "Inquire"},
+        {"price": "غير محدد"},
+        {"price": "اتصل بنا لمعرفة السعر"},
+    ]
+    for meta in missing_cases:
+        doc = MockDocument(2, "Missing Price Place", meta["price"], 0.9)
+        doc.metadata = meta
+        assert NLPController.extract_numeric_price(doc) is None, f"Expected None for {meta}"
+
+    # 2. Ranking checks (Ascending and Descending)
+    candidates = [
+        MockDocument(1, "Paid Tour High", "50.0 USD", 0.85),
+        MockDocument(2, "Free Museum Walk", "Free", 0.90),
+        MockDocument(3, "Paid Tour Low", "15.0 USD", 0.88),
+        MockDocument(4, "Unknown Price Tour", "Contact us", 0.80),
+    ]
+
+    # Ascending (cheapest 2): Free (0.0) first, Paid Tour Low (15.0) second
+    asc_ranked = NLPController.apply_price_ranking_if_requested("أرخص نشاطين", candidates, default_limit=4)
+    assert len(asc_ranked) == 2
+    assert [d.doc_id for d in asc_ranked] == [2, 3]
+
+    # Descending (most expensive 3): 50.0, 15.0, 0.0 (Free is last)
+    desc_ranked = NLPController.apply_price_ranking_if_requested("أغلى 3 أنشطة", candidates, default_limit=4)
+    assert len(desc_ranked) == 3
+    assert [d.doc_id for d in desc_ranked] == [1, 3, 2]

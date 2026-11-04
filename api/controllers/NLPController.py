@@ -425,6 +425,8 @@ class NLPController(BaseController):
         """
         Safely extracts numeric positive price and currency from document metadata.
         Returns (price_float, currency_code) or None if missing or invalid.
+        - Confirmed zero / free activities ('0', '0.0', 'Free', 'مجاني') return (0.0, currency).
+        - Missing or unconfirmed prices ('Contact us', 'Inquire', 'غير محدد', None, '') return None.
         """
         meta = getattr(doc, 'metadata', None)
         if isinstance(doc, dict):
@@ -451,6 +453,16 @@ class NLPController(BaseController):
             return None
 
         raw_upper = raw_str.upper()
+
+        # Check explicit missing / unconfirmed indicators first
+        missing_indicators = [
+            'CONTACT', 'INQUIRE', 'ENQUIRE', 'N/A', 'UNKNOWN', 'TBD',
+            'غير محدد', 'غير متوفر', 'اتصل', 'استفسر', 'عند الطلب', 'تواصل'
+        ]
+        if any(ind in raw_upper for ind in missing_indicators):
+            return None
+
+        # Detect currency if embedded in price string
         if any(k in raw_upper for k in ['EGP', 'LE', 'L.E', 'جنيه', 'ج.م']):
             currency = 'EGP'
         elif any(k in raw_upper for k in ['EUR', '€']):
@@ -459,6 +471,14 @@ class NLPController(BaseController):
             currency = 'GBP'
         elif any(k in raw_upper for k in ['USD', '$']):
             currency = 'USD'
+
+        # Check confirmed genuine free / zero-price indicators
+        free_indicators = [
+            'FREE', 'GRATIS', 'COMPLIMENTARY', 'NO COST', 'NO CHARGE',
+            'مجاني', 'مجانا', 'مجاناً', 'بدون رسوم', 'دخول مجاني', 'بالمجان'
+        ]
+        if any(ind in raw_upper for ind in free_indicators):
+            return 0.0, currency
 
         m = re.search(r'(\d+(?:\.\d+)?)', raw_str)
         if m:
@@ -477,8 +497,10 @@ class NLPController(BaseController):
         ranking intent is detected in the query.
         - Preserves relevance filtering: only operates on the already-filtered relevant candidate set.
         - Preserves requested count N if specified and available.
-        - Safeguards against mixed currencies without exchange rates.
-        - Retains score order when no ranking intent is present or if currencies conflict.
+        - Confirmed zero / free activities ('0', 'Free', 'مجاني') rank as cheapest (0.0).
+        - Unpriced / missing price candidates are excluded from numeric price ranking.
+        - Groups results by currency when multiple currencies exist, sorting within each group.
+        - Retains score order when no ranking intent is present.
         """
         if not documents:
             return []
@@ -499,16 +521,44 @@ class NLPController(BaseController):
                 valid_docs.append((doc, price, curr))
                 currencies.add(curr)
 
-        # Currency conflict guardrail: do not mix-sort different currencies
-        if len(currencies) > 1:
-            logger.warning(f"Conflicting currencies detected in price ranking candidates: {currencies}. Retaining original relevance ordering.")
-            return documents[:effective_limit]
-
         if not valid_docs:
             return documents[:effective_limit]
 
-        # Deterministic price sorting
+        # Harmonize free activities (price == 0.0) if all non-free activities share a single currency
+        non_free_currencies = {curr for _, p, curr in valid_docs if p > 0}
+        if len(non_free_currencies) == 1:
+            single_curr = next(iter(non_free_currencies))
+            harmonized = []
+            for doc, price, curr in valid_docs:
+                if price == 0.0 and curr != single_curr:
+                    meta = getattr(doc, 'metadata', {}) or {}
+                    raw_p = str(meta.get('price', '')).upper()
+                    if not any(c in raw_p for c in ['USD', '$', 'EUR', 'GBP', 'EGP', 'LE']):
+                        curr = single_curr
+                harmonized.append((doc, price, curr))
+            valid_docs = harmonized
+            currencies = {curr for _, _, curr in valid_docs}
+
         reverse = (direction == 'desc')
+
+        # Multi-currency handling: group results by currency and sort within each currency group
+        if len(currencies) > 1:
+            logger.info(f"Multiple currencies detected in price ranking candidates: {currencies}. Grouping and sorting by currency.")
+            groups = {}
+            for doc, price, curr in valid_docs:
+                groups.setdefault(curr, []).append((doc, price))
+
+            sorted_docs = []
+            # Order currencies by candidate count descending, then alphabetically
+            sorted_currency_names = sorted(groups.keys(), key=lambda c: (-len(groups[c]), c))
+            for curr in sorted_currency_names:
+                items = groups[curr]
+                items.sort(key=lambda x: x[1], reverse=reverse)
+                for doc, _ in items:
+                    sorted_docs.append(doc)
+            return sorted_docs[:effective_limit]
+
+        # Single currency deterministic price sorting
         valid_docs.sort(key=lambda item: item[1], reverse=reverse)
         sorted_docs = [item[0] for item in valid_docs]
 
@@ -536,7 +586,7 @@ class NLPController(BaseController):
             return None
 
         # 1. Try search with city filter if detected
-        fetch_limit = max(limit * 2, limit + 5)
+        fetch_limit = min(max(limit * 2, limit + 5), 20)
         results = None
         if target_city and hasattr(self.vectordb_client, "search_by_vector"):
             filter_payload = {"city": target_city}
@@ -656,6 +706,22 @@ class NLPController(BaseController):
             documents=retrieved_documents,
             default_limit=len(retrieved_documents) if retrieved_documents else 5,
         )
+
+        # Check if ranking intent and mixed currencies exist to inject comparison limitation guidance
+        ranking_intent = self.detect_ranking_intent(query)
+        if ranking_intent and retrieved_documents:
+            found_currencies = set()
+            for doc in retrieved_documents:
+                p_info = self.extract_numeric_price(doc)
+                if p_info:
+                    found_currencies.add(p_info[1])
+            if len(found_currencies) > 1:
+                currency_notice = (
+                    "\n\n[ملاحظة هامة للعملات: المصادر المرفقة أعلاه تتضمن عملات مختلفة، ولا يمكن مقارنتها في قائمة موحدة من الأرخص للأغلى لعدم توفر أسعار الصرف. الأنشطة مجمعة بحسب العملة ومرتبة بالسعر داخل كل عملة. اعرض الأنشطة مجمعة بحسب العملة ووضح للمستخدم تعذر المقارنة المباشرة، ولا تدّعِ أن القائمة ككل مرتبة من الأرخص للأغلى بين عملات مختلفة.]"
+                    if is_ar
+                    else "\n\n[IMPORTANT MULTI-CURRENCY NOTE: The retrieved sources above contain different currencies, and cannot be compared in a single unified cheapest-to-most-expensive sequence without exchange rates. The activities are grouped by currency and sorted by price within each currency. Present the activities grouped by currency and explain this comparison limitation to the user, without presenting a cross-currency list as a single price ranking.]"
+                )
+                footer_prompt = (footer_prompt or "") + currency_notice
 
         documents_prompts = ""
         for idx, doc in enumerate(retrieved_documents):
