@@ -2,7 +2,9 @@ from fastapi import FastAPI, APIRouter, Depends, UploadFile, status, Request, Fo
 from typing import List
 from fastapi.responses import JSONResponse
 import os
+import hashlib
 from helpers.config import get_settings, Settings
+from helpers.security import verify_admin_access
 from controllers import DataController, ProcessController, NLPController
 import aiofiles
 from models import ResponseSignal
@@ -15,8 +17,6 @@ from typing import Optional
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from bson import ObjectId
-
-from helpers.security import verify_admin_access
 
 logger = logging.getLogger('uvicorn.error')
 
@@ -208,22 +208,14 @@ async def update_file(
             content={"signal": "file_not_found", "message": "No file found with this ID."}
         )
 
-    old_file_path = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)),
-        "assets/files",
-        asset.asset_name
-    )
+    old_file_path = os.path.join(data_controller.files_dir, asset.asset_name)
 
     # delete old file from disk
     if os.path.exists(old_file_path):
         os.remove(old_file_path)
 
     # save new file with same asset_name
-    new_file_path = os.path.join(
-        os.path.dirname(os.path.dirname(__file__)),
-        "assets/files",
-        asset.asset_name
-    )
+    new_file_path = os.path.join(data_controller.files_dir, asset.asset_name)
 
     try:
         async with aiofiles.open(new_file_path, "wb") as f:

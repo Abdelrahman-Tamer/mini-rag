@@ -68,6 +68,14 @@ class Settings(BaseSettings):
     TRUSTED_PROXIES: list = ["127.0.0.1", "::1"]
     TRUSTED_CLOUDFLARE_PROXIES: list = ["127.0.0.1", "::1"]
 
+    # Guest Access & Session Policy
+    GUEST_DAILY_LIMIT: int = 5  # Max guest questions per 24h rolling window
+    GUEST_DAILY_WINDOW_SECONDS: int = 86400  # 24 hours in seconds
+    GUEST_BURST_LIMIT: int = 10  # Max guest requests per minute
+    GUEST_BURST_WINDOW_SECONDS: int = 60  # 1 minute burst window
+    GUEST_SESSION_INACTIVITY_SECONDS: int = 1800  # 30 minutes conversation inactivity TTL
+    GUEST_SECRET_KEY: Optional[str] = None  # Key used for HMAC signing of guest session tokens
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 def validate_admin_security_config(settings: Settings) -> None:

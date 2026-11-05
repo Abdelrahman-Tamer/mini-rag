@@ -9,6 +9,7 @@ class ChatRequest(BaseModel):
     conversation_id: Optional[str] = None
     city: Optional[str] = None
     category: Optional[str] = None
+    guest_token: Optional[str] = None
 
     @root_validator(pre=True)
     def normalize_text_or_prompt(cls, values):

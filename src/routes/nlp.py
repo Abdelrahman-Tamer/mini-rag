@@ -1,5 +1,15 @@
 from helpers.config import get_settings
-from helpers.rate_limiter import check_rate_limit
+from helpers.rate_limiter import check_rate_limit, get_client_ip
+from helpers.guest_session import (
+    resolve_guest_secret,
+    derive_guest_id,
+    generate_guest_token,
+    verify_guest_token,
+    get_guest_remaining_questions,
+    check_guest_limits,
+    get_guest_conversation_history,
+    append_guest_conversation_turn,
+)
 import uuid
 from fastapi import FastAPI, APIRouter, status, Request, Query, Depends
 from helpers.security import verify_admin_access
@@ -21,6 +31,46 @@ nlp_router = APIRouter(
     prefix="/api/v1/nlp",
     tags=["api_v1", "nlp"],
 )
+
+
+@nlp_router.post("/guest/session")
+async def create_guest_session_endpoint(request: Request):
+    app_settings = get_settings()
+    guest_secret = resolve_guest_secret(app_settings)
+    client_ip = get_client_ip(request, app_settings.TRUSTED_PROXIES, app_settings.TRUSTED_CLOUDFLARE_PROXIES)
+    guest_id = derive_guest_id(client_ip, guest_secret)
+    session_id = uuid.uuid4().hex
+    token = generate_guest_token(guest_id, session_id, guest_secret)
+
+    try:
+        remaining = get_guest_remaining_questions(
+            guest_id=guest_id,
+            redis_url=app_settings.REDIS_URL,
+            require_redis=getattr(app_settings, "REQUIRE_REDIS_RATE_LIMITER", False),
+            env=app_settings.ENVIRONMENT,
+            daily_limit=getattr(app_settings, "GUEST_DAILY_LIMIT", 5),
+            daily_window=getattr(app_settings, "GUEST_DAILY_WINDOW_SECONDS", 86400),
+        )
+    except RuntimeError as r_err:
+        logger.critical(f"Redis unavailable for guest session under fail-closed policy: {r_err}")
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "signal": "service_temporarily_unavailable",
+                "message": "Chat service is temporarily unavailable. Please try again shortly.",
+                "detail": "Distributed rate limiting cluster unavailable (fail-closed security policy enforced)."
+            },
+            headers={"Retry-After": "30"}
+        )
+
+    return {
+        "guest_token": token,
+        "guest_id": guest_id,
+        "session_id": session_id,
+        "daily_limit": getattr(app_settings, "GUEST_DAILY_LIMIT", 5),
+        "remaining_questions": remaining,
+        "inactivity_ttl_seconds": getattr(app_settings, "GUEST_SESSION_INACTIVITY_SECONDS", 1800),
+    }
 
 
 @nlp_router.post("/conversation")
@@ -67,39 +117,121 @@ async def list_conversations(request: Request, ids: str = Query("")):
 async def chat_endpoint(request: Request, chat_request: ChatRequest):
     app_settings = get_settings()
 
-    # Rate limiting abuse protection (Fail-Closed under require_redis)
-    try:
-        is_allowed, retry_after = check_rate_limit(
-            request=request,
-            max_requests=app_settings.RATE_LIMIT_CHAT_REQUESTS,
-            window_seconds=app_settings.RATE_LIMIT_CHAT_WINDOW_SECONDS,
-            trusted_proxies=app_settings.TRUSTED_PROXIES,
-            trusted_cloudflare_proxies=getattr(app_settings, "TRUSTED_CLOUDFLARE_PROXIES", None),
-            redis_url=app_settings.REDIS_URL,
-            require_redis=getattr(app_settings, "REQUIRE_REDIS_RATE_LIMITER", False),
-            prefix=f"nileguide:{app_settings.ENVIRONMENT}:chat"
-        )
-    except RuntimeError as r_err:
-        logger.critical(f"Distributed rate limiter unavailable under fail-closed policy: {r_err}")
-        return JSONResponse(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            content={
-                "signal": "service_temporarily_unavailable",
-                "message": "Chat service is temporarily unavailable due to rate limiter connectivity. Please try again shortly.",
-                "detail": "Distributed rate limiting cluster unavailable (fail-closed security policy enforced)."
-            },
-            headers={"Retry-After": "30"}
-        )
-    if not is_allowed:
-        return JSONResponse(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            content={
-                "signal": "rate_limit_exceeded",
-                "message": "Too many requests. Please wait a moment before sending another message.",
-                "retry_after": retry_after,
-            },
-            headers={"Retry-After": str(retry_after)}
-        )
+    is_guest = bool(chat_request.guest_token and chat_request.guest_token.strip())
+    guest_id = None
+    session_id = None
+    guest_remaining = None
+
+    if is_guest:
+        guest_secret = resolve_guest_secret(app_settings)
+        verified = verify_guest_token(chat_request.guest_token.strip(), guest_secret)
+        if not verified:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={
+                    "signal": "invalid_guest_token",
+                    "message": "Invalid or expired guest session token. Please start a new session.",
+                }
+            )
+        guest_id, session_id, _ = verified
+
+        # Verify network binding (prevent token theft and storage reset bypass)
+        client_ip = get_client_ip(request, app_settings.TRUSTED_PROXIES, app_settings.TRUSTED_CLOUDFLARE_PROXIES)
+        expected_guest_id = derive_guest_id(client_ip, guest_secret)
+        if guest_id != expected_guest_id:
+            logger.warning(f"Guest IP mismatch: token guest_id={guest_id}, caller derived={expected_guest_id}")
+            return JSONResponse(
+                status_code=status.HTTP_403_FORBIDDEN,
+                content={
+                    "signal": "guest_session_ip_mismatch",
+                    "message": "Guest session is bound to the originating network. Please start a new session.",
+                }
+            )
+
+        # Check guest rate limits and daily quota
+        try:
+            is_allowed, retry_after, remaining, error_type = check_guest_limits(
+                guest_id=guest_id,
+                redis_url=app_settings.REDIS_URL,
+                require_redis=getattr(app_settings, "REQUIRE_REDIS_RATE_LIMITER", False),
+                env=app_settings.ENVIRONMENT,
+                daily_limit=getattr(app_settings, "GUEST_DAILY_LIMIT", 5),
+                daily_window=getattr(app_settings, "GUEST_DAILY_WINDOW_SECONDS", 86400),
+                burst_limit=getattr(app_settings, "GUEST_BURST_LIMIT", 10),
+                burst_window=getattr(app_settings, "GUEST_BURST_WINDOW_SECONDS", 60),
+            )
+        except RuntimeError as r_err:
+            logger.critical(f"Distributed rate limiter unavailable for guest under fail-closed policy: {r_err}")
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={
+                    "signal": "service_temporarily_unavailable",
+                    "message": "Chat service is temporarily unavailable. Please try again shortly.",
+                    "detail": "Distributed rate limiting cluster unavailable (fail-closed security policy enforced)."
+                },
+                headers={"Retry-After": "30"}
+            )
+
+        if not is_allowed:
+            if error_type == "daily_quota_exceeded":
+                return JSONResponse(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    content={
+                        "signal": "guest_quota_exceeded",
+                        "message": "???? ???? ?????? ????????? ????? (5 ????? ??????). ???? ?????? ??????? ??????? ???????? ???? ??????.",
+                        "detail": "Guest daily quota exceeded (5 questions per 24 hours). Please sign up for a free account.",
+                        "remaining_questions": 0,
+                        "daily_limit": getattr(app_settings, "GUEST_DAILY_LIMIT", 5),
+                        "retry_after": retry_after,
+                    },
+                    headers={"Retry-After": str(retry_after)}
+                )
+            else:
+                return JSONResponse(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    content={
+                        "signal": "rate_limit_exceeded",
+                        "message": "Too many requests. Please wait a moment before sending another message.",
+                        "retry_after": retry_after,
+                        "remaining_questions": remaining,
+                    },
+                    headers={"Retry-After": str(retry_after)}
+                )
+        guest_remaining = remaining
+    else:
+        # Rate limiting abuse protection (Fail-Closed under require_redis)
+        try:
+            is_allowed, retry_after = check_rate_limit(
+                request=request,
+                max_requests=app_settings.RATE_LIMIT_CHAT_REQUESTS,
+                window_seconds=app_settings.RATE_LIMIT_CHAT_WINDOW_SECONDS,
+                trusted_proxies=app_settings.TRUSTED_PROXIES,
+                trusted_cloudflare_proxies=getattr(app_settings, "TRUSTED_CLOUDFLARE_PROXIES", None),
+                redis_url=app_settings.REDIS_URL,
+                require_redis=getattr(app_settings, "REQUIRE_REDIS_RATE_LIMITER", False),
+                prefix=f"nileguide:{app_settings.ENVIRONMENT}:chat"
+            )
+        except RuntimeError as r_err:
+            logger.critical(f"Distributed rate limiter unavailable under fail-closed policy: {r_err}")
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={
+                    "signal": "service_temporarily_unavailable",
+                    "message": "Chat service is temporarily unavailable due to rate limiter connectivity. Please try again shortly.",
+                    "detail": "Distributed rate limiting cluster unavailable (fail-closed security policy enforced)."
+                },
+                headers={"Retry-After": "30"}
+            )
+        if not is_allowed:
+            return JSONResponse(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                content={
+                    "signal": "rate_limit_exceeded",
+                    "message": "Too many requests. Please wait a moment before sending another message.",
+                    "retry_after": retry_after,
+                },
+                headers={"Retry-After": str(retry_after)}
+            )
 
     nlp_controller = NLPController(
         vectordb_client=request.app.vectordb_client,
@@ -129,7 +261,17 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
 
     prior_history = []
     conversation_model = None
-    if chat_request.conversation_id:
+
+    if is_guest and session_id:
+        raw_guest_history = get_guest_conversation_history(
+            session_id=session_id,
+            redis_url=app_settings.REDIS_URL,
+            require_redis=getattr(app_settings, "REQUIRE_REDIS_RATE_LIMITER", False),
+            env=app_settings.ENVIRONMENT,
+            ttl=getattr(app_settings, "GUEST_SESSION_INACTIVITY_SECONDS", 1800),
+        )
+        prior_history = [{"role": turn.get("role", "user"), "content": turn.get("content", "")} for turn in raw_guest_history]
+    elif chat_request.conversation_id:
         conversation_model = await ConversationModel.create_instance(
             db_client=request.app.db_client
         )
@@ -147,7 +289,18 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
         if answer:
             answer = NLPController._clean_tourism_terminology(answer)
 
-        if conversation_model and chat_request.conversation_id:
+        if is_guest and session_id:
+            append_guest_conversation_turn(
+                session_id=session_id,
+                user_msg=text,
+                assistant_msg=answer,
+                sources=[],
+                redis_url=app_settings.REDIS_URL,
+                require_redis=getattr(app_settings, "REQUIRE_REDIS_RATE_LIMITER", False),
+                env=app_settings.ENVIRONMENT,
+                ttl=getattr(app_settings, "GUEST_SESSION_INACTIVITY_SECONDS", 1800),
+            )
+        elif conversation_model and chat_request.conversation_id:
             try:
                 await conversation_model.append_turn(
                     conversation_id=chat_request.conversation_id,
@@ -157,15 +310,19 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
                 )
             except Exception as conv_err:
                 logger.warning(f"Failed to append greeting turn to conversation: {conv_err}")
-        return JSONResponse(
-            content={
-                "signal": ResponseSignal.CHAT_SUCCESS.value,
-                "message": answer,
-                "answer": answer,
-                "response": answer,
-                "sources": [],
-            }
-        )
+
+        resp_content = {
+            "signal": ResponseSignal.CHAT_SUCCESS.value,
+            "message": answer,
+            "answer": answer,
+            "response": answer,
+            "sources": [],
+        }
+        if is_guest:
+            resp_content["guest_remaining_questions"] = guest_remaining
+            resp_content["guest_daily_limit"] = getattr(app_settings, "GUEST_DAILY_LIMIT", 5)
+
+        return JSONResponse(content=resp_content)
 
     try:
         results = nlp_controller.chat(
@@ -244,7 +401,18 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
         if answer:
             answer = NLPController._clean_tourism_terminology(answer)
 
-        if conversation_model and chat_request.conversation_id:
+        if is_guest and session_id:
+            append_guest_conversation_turn(
+                session_id=session_id,
+                user_msg=text,
+                assistant_msg=answer,
+                sources=[],
+                redis_url=app_settings.REDIS_URL,
+                require_redis=getattr(app_settings, "REQUIRE_REDIS_RATE_LIMITER", False),
+                env=app_settings.ENVIRONMENT,
+                ttl=getattr(app_settings, "GUEST_SESSION_INACTIVITY_SECONDS", 1800),
+            )
+        elif conversation_model and chat_request.conversation_id:
             try:
                 await conversation_model.append_turn(
                     conversation_id=chat_request.conversation_id,
@@ -254,15 +422,19 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
                 )
             except Exception as conv_err:
                 logger.warning(f"Failed to append turn to conversation: {conv_err}")
-        return JSONResponse(
-            content={
-                "signal": ResponseSignal.CHAT_SUCCESS.value,
-                "message": answer,
-                "answer": answer,
-                "response": answer,
-                "sources": [],
-            }
-        )
+
+        resp_content = {
+            "signal": ResponseSignal.CHAT_SUCCESS.value,
+            "message": answer,
+            "answer": answer,
+            "response": answer,
+            "sources": [],
+        }
+        if is_guest:
+            resp_content["guest_remaining_questions"] = guest_remaining
+            resp_content["guest_daily_limit"] = getattr(app_settings, "GUEST_DAILY_LIMIT", 5)
+
+        return JSONResponse(content=resp_content)
 
     sources = [
         {
@@ -327,7 +499,18 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
     if answer:
         answer = NLPController._clean_tourism_terminology(answer)
 
-    if conversation_model and chat_request.conversation_id:
+    if is_guest and session_id:
+        append_guest_conversation_turn(
+            session_id=session_id,
+            user_msg=text,
+            assistant_msg=answer,
+            sources=sources[:3],
+            redis_url=app_settings.REDIS_URL,
+            require_redis=getattr(app_settings, "REQUIRE_REDIS_RATE_LIMITER", False),
+            env=app_settings.ENVIRONMENT,
+            ttl=getattr(app_settings, "GUEST_SESSION_INACTIVITY_SECONDS", 1800),
+        )
+    elif conversation_model and chat_request.conversation_id:
         await conversation_model.append_turn(
             conversation_id=chat_request.conversation_id,
             user_msg=text,
@@ -335,15 +518,18 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
             assistant_sources=sources[:3],
         )
 
-    return JSONResponse(
-        content={
-            "signal": ResponseSignal.CHAT_SUCCESS.value,
-            "message": "Here's what I found based on the available documents.",
-            "answer": answer,
-            "response": answer,
-            "sources": sources,
-        }
-    )
+    resp_content = {
+        "signal": ResponseSignal.CHAT_SUCCESS.value,
+        "message": "Here's what I found based on the available documents.",
+        "answer": answer,
+        "response": answer,
+        "sources": sources,
+    }
+    if is_guest:
+        resp_content["guest_remaining_questions"] = guest_remaining
+        resp_content["guest_daily_limit"] = getattr(app_settings, "GUEST_DAILY_LIMIT", 5)
+
+    return JSONResponse(content=resp_content)
 
 
 @nlp_router.post("/chat/stream")
