@@ -137,9 +137,7 @@ def get_client_ip(
     6. Discard malformed IP tokens.
     """
     raw_peer = request.client.host if request.client else "127.0.0.1"
-    peer_ip = parse_and_validate_ip(raw_peer)
-    if not peer_ip:
-        return "127.0.0.1"
+    peer_ip = parse_and_validate_ip(raw_peer) or ipaddress.ip_address("127.0.0.1")
 
     effective_trusted = trusted_proxies or ["127.0.0.1", "::1"]
     

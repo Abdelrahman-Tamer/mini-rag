@@ -91,6 +91,7 @@ def parse_and_validate_ip(ip_str: str) -> Optional[Union[ipaddress.IPv4Address, 
     if not ip_str or not isinstance(ip_str, str):
         return None
     cleaned = ip_str.strip().strip("[]")
+    # Strip port if present in IPv4 format (e.g. 192.168.1.1:8080)
     if ":" in cleaned and cleaned.count(":") == 1 and "." in cleaned:
         cleaned = cleaned.split(":")[0]
     try:
@@ -136,9 +137,7 @@ def get_client_ip(
     6. Discard malformed IP tokens.
     """
     raw_peer = request.client.host if request.client else "127.0.0.1"
-    peer_ip = parse_and_validate_ip(raw_peer)
-    if not peer_ip:
-        return "127.0.0.1"
+    peer_ip = parse_and_validate_ip(raw_peer) or ipaddress.ip_address("127.0.0.1")
 
     effective_trusted = trusted_proxies or ["127.0.0.1", "::1"]
     
@@ -159,11 +158,14 @@ def get_client_ip(
     forwarded_for = request.headers.get("X-Forwarded-For")
     if forwarded_for:
         raw_hops = [hop.strip() for hop in forwarded_for.split(",") if hop.strip()]
+        # Traverse right-to-left
         for hop_str in reversed(raw_hops):
             hop_ip = parse_and_validate_ip(hop_str)
             if not hop_ip:
+                # Malformed token encountered; skip and continue searching
                 continue
             if not is_ip_trusted(hop_ip, effective_trusted):
+                # First untrusted hop from the right is the genuine client
                 return str(hop_ip)
 
     return str(peer_ip)

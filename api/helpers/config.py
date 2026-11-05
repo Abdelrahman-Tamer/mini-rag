@@ -31,9 +31,13 @@ class Settings(BaseSettings):
     GENERATION_BACKEND: str = "OPENAI"
     EMBEDDING_BACKEND: str = "OPENAI"
 
+    LLM_GENERATION_PROVIDER: str = "openai_compatible"  # "openai_compatible", "native_gemini"
+    GEMINI_API_KEY: Optional[str] = ""
+
     OPENAI_API_KEY: Optional[str] = ""
     OPENAI_API_URL: Optional[str] = "https://generativelanguage.googleapis.com/v1beta/openai/"
     GENERATION_MODEL_ID: Optional[str] = "gemini-3.5-flash-lite"
+    FALLBACK_MODEL_ID: Optional[str] = "gemini-3.5-flash"
     EMBEDDING_MODEL_ID: Optional[str] = "gemini-embedding-001"
     EMBEDDING_MODEL_SIZE: Optional[int] = 3072
     INPUT_DEFAULT_MAX_CHARACTERS: Optional[int] = 4096
@@ -67,6 +71,14 @@ class Settings(BaseSettings):
     REQUIRE_REDIS_RATE_LIMITER: bool = False
     TRUSTED_PROXIES: list = ["127.0.0.1", "::1"]
     TRUSTED_CLOUDFLARE_PROXIES: list = ["127.0.0.1", "::1"]
+
+    # Guest Access & Session Policy
+    GUEST_DAILY_LIMIT: int = 5  # Max guest questions per 24h rolling window
+    GUEST_DAILY_WINDOW_SECONDS: int = 86400  # 24 hours in seconds
+    GUEST_BURST_LIMIT: int = 10  # Max guest requests per minute
+    GUEST_BURST_WINDOW_SECONDS: int = 60  # 1 minute burst window
+    GUEST_SESSION_INACTIVITY_SECONDS: int = 1800  # 30 minutes conversation inactivity TTL
+    GUEST_SECRET_KEY: Optional[str] = None  # Key used for HMAC signing of guest session tokens
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -170,3 +182,17 @@ def validate_embedding_config(settings: Settings) -> None:
 
 def get_settings():
     return Settings()
+
+
+def validate_generation_config(settings: Settings) -> None:
+    """
+    Validates generation provider configuration.
+    Fails closed if native_gemini is selected but GEMINI_API_KEY is missing or empty.
+    """
+    provider = (settings.LLM_GENERATION_PROVIDER or "openai_compatible").strip().lower()
+    if provider == "native_gemini":
+        if not settings.GEMINI_API_KEY or not str(settings.GEMINI_API_KEY).strip():
+            raise ValueError(
+                "CRITICAL CONFIGURATION ERROR: LLM_GENERATION_PROVIDER is set to 'native_gemini', "
+                "but GEMINI_API_KEY is missing or empty. A dedicated Gemini API key is required."
+            )

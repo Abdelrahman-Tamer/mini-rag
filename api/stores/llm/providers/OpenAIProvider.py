@@ -51,7 +51,8 @@ class OpenAIProvider(LLMInterface):
                     default_input_max_characters: int=1000,
                     default_generation_max_output_tokens: int=1000,
                     default_generation_temperature: float=0.1,
-                    timeout: float = 20.0):
+                    timeout: float = 20.0,
+                    fallback_model_id: str = None):
         
         self.api_key = api_key
         self.api_url = api_url
@@ -62,6 +63,7 @@ class OpenAIProvider(LLMInterface):
         self.timeout = timeout
 
         self.generation_model_id = None
+        self.fallback_model_id = fallback_model_id
 
         self.embedding_model_id = None
         self.embedding_size = None
@@ -78,6 +80,9 @@ class OpenAIProvider(LLMInterface):
 
     def set_generation_model(self, model_id: str):
         self.generation_model_id = model_id
+
+    def set_fallback_model(self, model_id: str):
+        self.fallback_model_id = model_id
 
     def set_embedding_model(self, model_id: str, embedding_size: int):
         self.embedding_model_id = model_id
@@ -112,15 +117,11 @@ class OpenAIProvider(LLMInterface):
 
         corr_id = uuid.uuid4().hex[:8]
 
-        # Verified dual-model failover strategy: primary gemini-3.5-flash-lite <-> verified fallback gemini-3.5-flash
+        # Build candidate model list ensuring no duplicate model invocation
         models_to_try = [self.generation_model_id]
-        if self.generation_model_id == "gemini-3.5-flash-lite":
-            models_to_try.append("gemini-3.5-flash")
-        elif self.generation_model_id == "gemini-3.5-flash":
-            models_to_try.append("gemini-3.5-flash-lite")
-        elif "gemini" in (self.generation_model_id or "").lower():
-            # If an unverified Gemini model is set (e.g. gemini-3.8-flash), fall back to verified gemini-3.5-flash-lite
-            models_to_try.append("gemini-3.5-flash-lite")
+        resolved_fallback = self.fallback_model_id if self.fallback_model_id is not None else "gemini-3.5-flash"
+        if resolved_fallback and resolved_fallback != self.generation_model_id and resolved_fallback not in models_to_try:
+            models_to_try.append(resolved_fallback)
 
         for idx, target_model in enumerate(models_to_try):
             try:
