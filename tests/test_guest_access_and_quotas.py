@@ -85,7 +85,7 @@ def test_verify_guest_token_tampering_detected():
     assert verify_guest_token(tampered_ts, secret) is None
 
     # Tamper signature
-    tampered_sig = f"{parts[0]}.{parts[1]}.{parts[2]}.a{parts[3][1:]}"
+    tampered_sig = f"{parts[0]}.{parts[1]}.{parts[2]}.{'0' if parts[3][0] != '0' else '1'}{parts[3][1:]}"
     assert verify_guest_token(tampered_sig, secret) is None
 
     # Wrong secret

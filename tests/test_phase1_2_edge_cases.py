@@ -768,19 +768,20 @@ def test_distributed_asset_lock_acquisition_and_release():
     nlp.app_settings = MagicMock()
     nlp.app_settings.REDIS_URL = "redis://mock-redis:6379"
     nlp.app_settings.REQUIRE_REDIS_RATE_LIMITER = True
+    nlp.app_settings.ENVIRONMENT = "development"
 
     with patch.dict(sys.modules, {"redis": fake_redis_mod}):
         with nlp.asset_lock("asset_dist_test", ttl_seconds=30):
             mock_redis.set.assert_called_once()
             args, kwargs = mock_redis.set.call_args
-            assert args[0] == "nileguide:lock:asset:asset_dist_test"
+            assert args[0] == "nileguide:development:lock:asset:asset_dist_test"
             assert kwargs.get("nx") is True
             assert kwargs.get("px") == 30000
 
         mock_redis.eval.assert_called_once()
         eval_args, _ = mock_redis.eval.call_args
         assert "redis.call('GET', KEYS[1]) == ARGV[1]" in eval_args[0]
-        assert eval_args[2] == "nileguide:lock:asset:asset_dist_test"
+        assert eval_args[2] == "nileguide:development:lock:asset:asset_dist_test"
 
 
 def test_distributed_asset_lock_collision_fails():
@@ -905,17 +906,18 @@ def test_distributed_asset_lock_lost_lock_detection_aborts_promotion():
     nlp.app_settings = MagicMock()
     nlp.app_settings.REDIS_URL = "redis://mock-redis:6379"
     nlp.app_settings.REQUIRE_REDIS_RATE_LIMITER = True
+    nlp.app_settings.ENVIRONMENT = "development"
 
     with patch.dict(sys.modules, {"redis": fake_redis_mod}):
         # Acquire lock as Worker A
         with nlp.asset_lock("asset_expire_test", ttl_seconds=10) as handle_a:
             assert handle_a.is_valid() is True
             token_a = handle_a.token
-            assert redis_store["nileguide:lock:asset:asset_expire_test"] == token_a
+            assert redis_store["nileguide:development:lock:asset:asset_expire_test"] == token_a
 
             # SIMULATE TTL EXPIRY & WORKER B ACQUISITION
             token_b = "worker-b-token-9999"
-            redis_store["nileguide:lock:asset:asset_expire_test"] = token_b
+            redis_store["nileguide:development:lock:asset:asset_expire_test"] = token_b
 
             # Worker A checks validity -> lost!
             assert handle_a.is_valid() is False
@@ -936,7 +938,7 @@ def test_distributed_asset_lock_lost_lock_detection_aborts_promotion():
             assert not mock_vectordb.set_payload.called
 
         # Worker A exited context manager: verify Worker B's lock was NOT deleted
-        assert redis_store.get("nileguide:lock:asset:asset_expire_test") == token_b
+        assert redis_store.get("nileguide:development:lock:asset:asset_expire_test") == token_b
 
 
 def test_safe_reindex_chunks_uses_distributed_lock_integration():

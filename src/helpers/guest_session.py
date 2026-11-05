@@ -112,13 +112,18 @@ _in_memory_guest_limiter = InMemoryGuestLimiter()
 
 
 def resolve_guest_secret(settings: Any) -> str:
-    """Resolves cryptographic secret key for guest HMAC signing."""
+    """Resolves cryptographic secret key for guest HMAC signing with production fail-closed security."""
     if getattr(settings, "GUEST_SECRET_KEY", None) and settings.GUEST_SECRET_KEY.strip():
         return settings.GUEST_SECRET_KEY.strip()
     if getattr(settings, "ADMIN_API_KEY", None) and settings.ADMIN_API_KEY.strip():
         return settings.ADMIN_API_KEY.strip()
     if getattr(settings, "SYNC_API_KEY", None) and settings.SYNC_API_KEY.strip():
         return settings.SYNC_API_KEY.strip()
+
+    env = (getattr(settings, "ENVIRONMENT", None) or "development").strip().lower()
+    if env in ("production", "staging", "prod"):
+        raise RuntimeError("FATAL: Guest HMAC secret key is mandatory in production/staging environments.")
+
     return "nileguide-guest-secret-2026-safe-dev"
 
 
@@ -190,7 +195,8 @@ def get_guest_remaining_questions(
     daily_window: int = 86400
 ) -> int:
     """Returns the number of remaining questions for the guest in the 24h window without incrementing."""
-    quota_key = f"nileguide:{env}:guest_quota:{guest_id}"
+    clean_env = (env or "development").strip().lower()
+    quota_key = f"nileguide:{clean_env}:guest_quota:{guest_id}"
 
     if redis_url and redis_url.strip():
         try:
@@ -228,8 +234,9 @@ def check_guest_limits(
     Evaluates guest burst rate limit (10 req/min) and daily quota (5 questions/24h).
     Returns: (is_allowed: bool, retry_after: int, remaining_questions: int, error_type: str)
     """
-    burst_key = f"nileguide:{env}:guest_burst:{guest_id}"
-    quota_key = f"nileguide:{env}:guest_quota:{guest_id}"
+    clean_env = (env or "development").strip().lower()
+    burst_key = f"nileguide:{clean_env}:guest_burst:{guest_id}"
+    quota_key = f"nileguide:{clean_env}:guest_quota:{guest_id}"
 
     if redis_url and redis_url.strip():
         try:
@@ -308,8 +315,9 @@ def get_guest_conversation_history(
     Retrieves temporary guest conversation turns from Redis or in-memory buffer.
     Never queries or touches MongoDB.
     """
+    clean_env = (env or "development").strip().lower()
     session_hash = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:32]
-    key = f"nileguide:{env}:guest_conv:{session_hash}"
+    key = f"nileguide:{clean_env}:guest_conv:{session_hash}"
 
     if redis_url and redis_url.strip():
         try:
@@ -348,8 +356,9 @@ def append_guest_conversation_turn(
     Appends a new turn to the temporary guest session with sliding TTL (default 1800s).
     Never writes to MongoDB.
     """
+    clean_env = (env or "development").strip().lower()
     session_hash = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:32]
-    key = f"nileguide:{env}:guest_conv:{session_hash}"
+    key = f"nileguide:{clean_env}:guest_conv:{session_hash}"
 
     if redis_url and redis_url.strip():
         try:

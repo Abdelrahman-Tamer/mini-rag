@@ -69,7 +69,9 @@ class NLPController(BaseController):
         clean_id = str(asset_id).strip()
         thread_lock = self._get_asset_lock(clean_id)
         token = str(uuid.uuid4())
-        lock_key = f"nileguide:lock:asset:{clean_id}"
+        raw_env = getattr(self.app_settings, "ENVIRONMENT", "development")
+        env = raw_env.strip().lower() if isinstance(raw_env, str) else "development"
+        lock_key = f"nileguide:{env}:lock:asset:{clean_id}"
         redis_client = None
 
         if hasattr(self, "app_settings") and self.app_settings.REDIS_URL and self.app_settings.REDIS_URL.strip():

@@ -209,7 +209,7 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
                 trusted_cloudflare_proxies=getattr(app_settings, "TRUSTED_CLOUDFLARE_PROXIES", None),
                 redis_url=app_settings.REDIS_URL,
                 require_redis=getattr(app_settings, "REQUIRE_REDIS_RATE_LIMITER", False),
-                prefix=f"nileguide:{app_settings.ENVIRONMENT}:chat"
+                prefix=f"nileguide:{(app_settings.ENVIRONMENT or 'development').strip().lower()}:chat"
             )
         except RuntimeError as r_err:
             logger.critical(f"Distributed rate limiter unavailable under fail-closed policy: {r_err}")
@@ -544,7 +544,7 @@ async def chat_stream_endpoint(request: Request, chat_request: ChatRequest):
         trusted_cloudflare_proxies=getattr(app_settings, "TRUSTED_CLOUDFLARE_PROXIES", None),
         redis_url=app_settings.REDIS_URL,
         require_redis=getattr(app_settings, "REQUIRE_REDIS_RATE_LIMITER", False),
-        prefix="stream"
+        prefix=f"nileguide:{(app_settings.ENVIRONMENT or 'development').strip().lower()}:stream"
     )
     if not is_allowed:
         return JSONResponse(
