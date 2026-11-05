@@ -62,6 +62,8 @@ async def init_services():
         # generation client
         app.generation_client = llm_provider_factory.create(provider=settings.GENERATION_BACKEND)
         app.generation_client.set_generation_model(model_id=settings.GENERATION_MODEL_ID)
+        if hasattr(app.generation_client, "set_fallback_model") and getattr(settings, "FALLBACK_MODEL_ID", None):
+            app.generation_client.set_fallback_model(model_id=settings.FALLBACK_MODEL_ID)
 
         # embedding client
         app.embedding_client = llm_provider_factory.create(provider=settings.EMBEDDING_BACKEND)

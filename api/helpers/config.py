@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: Optional[str] = ""
     OPENAI_API_URL: Optional[str] = "https://generativelanguage.googleapis.com/v1beta/openai/"
     GENERATION_MODEL_ID: Optional[str] = "gemini-3.5-flash-lite"
+    FALLBACK_MODEL_ID: Optional[str] = "gemini-3.5-flash"
     EMBEDDING_MODEL_ID: Optional[str] = "gemini-embedding-001"
     EMBEDDING_MODEL_SIZE: Optional[int] = 3072
     INPUT_DEFAULT_MAX_CHARACTERS: Optional[int] = 4096
