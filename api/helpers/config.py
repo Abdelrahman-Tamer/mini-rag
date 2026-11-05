@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     GENERATION_BACKEND: str = "OPENAI"
     EMBEDDING_BACKEND: str = "OPENAI"
 
+    LLM_GENERATION_PROVIDER: str = "openai_compatible"  # "openai_compatible", "native_gemini"
+    GEMINI_API_KEY: Optional[str] = ""
+
     OPENAI_API_KEY: Optional[str] = ""
     OPENAI_API_URL: Optional[str] = "https://generativelanguage.googleapis.com/v1beta/openai/"
     GENERATION_MODEL_ID: Optional[str] = "gemini-3.5-flash-lite"
@@ -179,3 +182,17 @@ def validate_embedding_config(settings: Settings) -> None:
 
 def get_settings():
     return Settings()
+
+
+def validate_generation_config(settings: Settings) -> None:
+    """
+    Validates generation provider configuration.
+    Fails closed if native_gemini is selected but GEMINI_API_KEY is missing or empty.
+    """
+    provider = (settings.LLM_GENERATION_PROVIDER or "openai_compatible").strip().lower()
+    if provider == "native_gemini":
+        if not settings.GEMINI_API_KEY or not str(settings.GEMINI_API_KEY).strip():
+            raise ValueError(
+                "CRITICAL CONFIGURATION ERROR: LLM_GENERATION_PROVIDER is set to 'native_gemini', "
+                "but GEMINI_API_KEY is missing or empty. A dedicated Gemini API key is required."
+            )

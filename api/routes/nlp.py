@@ -372,12 +372,20 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
             "Keep your tone welcoming and informative."
         )
         try:
-            answer, full_prompt, _ = nlp_controller.generate_chat_answer(
-                query=text,
-                retrieved_documents=[],
-                prior_history=prior_history,
-                system_prompt=fallback_prompt,
-            )
+            if hasattr(nlp_controller, "generate_chat_answer_async"):
+                answer, full_prompt, _ = await nlp_controller.generate_chat_answer_async(
+                    query=text,
+                    retrieved_documents=[],
+                    prior_history=prior_history,
+                    system_prompt=fallback_prompt,
+                )
+            else:
+                answer, full_prompt, _ = nlp_controller.generate_chat_answer(
+                    query=text,
+                    retrieved_documents=[],
+                    prior_history=prior_history,
+                    system_prompt=fallback_prompt,
+                )
         except Exception as e:
             if is_guest and guest_id and req_id:
                 refund_guest_quota(guest_id, req_id, app_settings.REDIS_URL, getattr(app_settings, "REQUIRE_REDIS_RATE_LIMITER", False), app_settings.ENVIRONMENT)
@@ -481,11 +489,18 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
     ]
 
     try:
-        answer, full_prompt, _ = nlp_controller.generate_chat_answer(
-            query=text,
-            retrieved_documents=results,
-            prior_history=prior_history
-        )
+        if hasattr(nlp_controller, "generate_chat_answer_async"):
+            answer, full_prompt, _ = await nlp_controller.generate_chat_answer_async(
+                query=text,
+                retrieved_documents=results,
+                prior_history=prior_history
+            )
+        else:
+            answer, full_prompt, _ = nlp_controller.generate_chat_answer(
+                query=text,
+                retrieved_documents=results,
+                prior_history=prior_history
+            )
     except Exception as e:
         if is_guest and guest_id and req_id:
             refund_guest_quota(guest_id, req_id, app_settings.REDIS_URL, getattr(app_settings, "REQUIRE_REDIS_RATE_LIMITER", False), app_settings.ENVIRONMENT)
@@ -644,11 +659,18 @@ async def chat_stream_endpoint(request: Request, chat_request: ChatRequest):
     ]
 
     try:
-        answer, _, _ = nlp_controller.generate_chat_answer(
-            query=text,
-            retrieved_documents=results,
-            prior_history=prior_history,
-        )
+        if hasattr(nlp_controller, "generate_chat_answer_async"):
+            answer, _, _ = await nlp_controller.generate_chat_answer_async(
+                query=text,
+                retrieved_documents=results,
+                prior_history=prior_history,
+            )
+        else:
+            answer, _, _ = nlp_controller.generate_chat_answer(
+                query=text,
+                retrieved_documents=results,
+                prior_history=prior_history,
+            )
     except Exception as e:
         error_id = uuid.uuid4().hex[:8]
         logger.error(f"Error during streaming generate_chat_answer [error_id={error_id}]: {traceback.format_exc()}")

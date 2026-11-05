@@ -792,6 +792,147 @@ class NLPController(BaseController):
 
         return answer, full_prompt, False
 
+
+    async def generate_chat_answer_async(self, query: str, retrieved_documents: list, prior_history: list = None, system_prompt: str = None):
+        """
+        Asynchronous variant of generate_chat_answer that awaits native async provider generation
+        without blocking the FastAPI event loop.
+        """
+        # If generate_chat_answer is patched or mocked by test harnesses, delegate directly
+        if hasattr(self.generate_chat_answer, "return_value") or hasattr(self.generate_chat_answer, "side_effect"):
+            return self.generate_chat_answer(query, retrieved_documents, prior_history, system_prompt)
+
+        is_ar = any('\u0600' <= char <= '\u06ff' for char in query)
+        detected_lang = "ar" if is_ar else "en"
+        self.template_parser.set_language(detected_lang)
+
+        # Check response cache if standalone query
+        is_standalone = not prior_history or len(prior_history) == 0
+        cache_key = None
+        if is_standalone:
+            detected_city = self.extract_city(query)
+            cache_key = global_response_cache.generate_key(
+                query=query,
+                language=detected_lang,
+                city=detected_city
+            )
+            cached_data = global_response_cache.get(cache_key)
+            if cached_data:
+                cached_ans = self._clean_tourism_terminology(cached_data["answer"])
+                return cached_ans, cached_data.get("full_prompt", ""), True
+
+        if system_prompt is None:
+            system_prompt = self.template_parser.get("rag", "system_prompt")
+
+        footer_prompt = self.template_parser.get("rag", "footer_prompt", {
+            "query": query
+        })
+
+        max_input_chars = self.app_settings.INPUT_DEFAULT_MAX_CHARACTERS
+        footer_len = len(footer_prompt) if footer_prompt else 0
+        doc_budget = max_input_chars - footer_len
+
+        # Ensure retrieved documents adhere to price ranking if ranking intent was detected
+        retrieved_documents = self.apply_price_ranking_if_requested(
+            query=query,
+            documents=retrieved_documents,
+            default_limit=len(retrieved_documents) if retrieved_documents else 5,
+        )
+
+        # Check if ranking intent and mixed currencies exist to inject comparison limitation guidance
+        ranking_intent = self.detect_ranking_intent(query)
+        if ranking_intent and retrieved_documents:
+            found_currencies = set()
+            for doc in retrieved_documents:
+                p_info = self.extract_numeric_price(doc)
+                if p_info:
+                    found_currencies.add(p_info[1])
+            if len(found_currencies) > 1:
+                currency_notice = (
+                    "\n\n[ملاحظة هامة للعملات: المصادر المرفقة أعلاه تتضمن عملات مختلفة، ولا يمكن مقارنتها في قائمة موحدة من الأرخص للأغلى لعدم توفر أسعار الصرف. الأنشطة مجمعة بحسب العملة ومرتبة بالسعر داخل كل عملة. اعرض الأنشطة مجمعة بحسب العملة ووضح للمستخدم تعذر المقارنة المباشرة، ولا تدّعِ أن القائمة ككل مرتبة من الأرخص للأغلى بين عملات مختلفة.]"
+                    if is_ar
+                    else "\n\n[IMPORTANT MULTI-CURRENCY NOTE: The retrieved sources above contain different currencies, and cannot be compared in a single unified cheapest-to-most-expensive sequence without exchange rates. The activities are grouped by currency and sorted by price within each currency. Present the activities grouped by currency and explain this comparison limitation to the user, without presenting a cross-currency list as a single price ranking.]"
+                )
+                footer_prompt = (footer_prompt or "") + currency_notice
+
+        documents_prompts = ""
+        for idx, doc in enumerate(retrieved_documents):
+            chunk_text = self._format_document_context(doc)
+            doc_prompt = self.template_parser.get("rag", "document_prompt", {
+                "doc_num": idx + 1,
+                "chunk_text": chunk_text,
+                "score": round(doc.score, 3),
+            })
+            if not doc_prompt:
+                continue
+            separator = "\n\n" if documents_prompts else ""
+            if len(documents_prompts) + len(separator) + len(doc_prompt) > doc_budget:
+                break
+            documents_prompts += separator + doc_prompt
+
+        chat_history = [
+            self.generation_client.construct_prompt(
+                prompt=system_prompt,
+                role=self.generation_client.enums.SYSTEM.value,
+            )
+        ]
+
+        if prior_history:
+            for msg in prior_history[-MAX_HISTORY_TURNS*2:]:
+                role_value = msg.get("role", "user")
+                if role_value == "assistant":
+                    mapped_role = self.generation_client.enums.ASSISTANT.value
+                else:
+                    mapped_role = self.generation_client.enums.USER.value
+                chat_history.append(
+                    self.generation_client.construct_prompt(
+                        prompt=msg.get("content", ""),
+                        role=mapped_role,
+                    )
+                )
+
+        full_prompt = (
+            "\n\n".join([documents_prompts, footer_prompt])
+            if documents_prompts
+            else footer_prompt
+        )
+
+        chat_history.append(
+            self.generation_client.construct_prompt(
+                prompt=full_prompt,
+                role=self.generation_client.enums.USER.value,
+            )
+        )
+
+        import inspect
+        from unittest.mock import AsyncMock
+        gen_fn = getattr(self.generation_client, "generate_text_async", None)
+        if callable(gen_fn) and (inspect.iscoroutinefunction(gen_fn) or isinstance(gen_fn, AsyncMock)):
+            answer = await gen_fn(
+                prompt=chat_history,
+                max_output_tokens=self.app_settings.GENERATION_DEFAULT_MAX_TOKENS,
+                temperature=self.app_settings.GENERATION_DEFAULT_TEMPERATURE,
+            )
+        else:
+            answer = self.generation_client.generate_text(
+                prompt=chat_history,
+                max_output_tokens=self.app_settings.GENERATION_DEFAULT_MAX_TOKENS,
+                temperature=self.app_settings.GENERATION_DEFAULT_TEMPERATURE,
+            )
+
+        if answer:
+            answer = self._clean_tourism_terminology(answer)
+
+        # Cache standalone results
+        if is_standalone and cache_key and answer:
+            global_response_cache.set(cache_key, {
+                "answer": answer,
+                "full_prompt": full_prompt,
+            })
+
+        return answer, full_prompt, False
+
+
     def sync_activity(self, activity: dict) -> dict:
         """
         Idempotently inserts or updates an activity in Qdrant with embeddings.

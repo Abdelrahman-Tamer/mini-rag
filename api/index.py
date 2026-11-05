@@ -39,7 +39,7 @@ async def init_services():
     if getattr(app.state, "initialized", False):
         return True
     try:
-        from helpers.config import get_settings, validate_admin_security_config, validate_embedding_config
+        from helpers.config import get_settings, validate_admin_security_config, validate_embedding_config, validate_generation_config
         from motor.motor_asyncio import AsyncIOMotorClient
         from stores.llm.LLMProviderFactory import LLMProviderFactory
         from stores.vectordb.VectorDBProviderFactory import VectorDBProviderFactory
@@ -48,6 +48,7 @@ async def init_services():
         settings = get_settings()
         validate_admin_security_config(settings)
         validate_embedding_config(settings)
+        validate_generation_config(settings)
 
         if settings.MONGODB_URL:
             app.mongo_conn = AsyncIOMotorClient(settings.MONGODB_URL)
@@ -59,8 +60,12 @@ async def init_services():
         llm_provider_factory = LLMProviderFactory(settings)
         vectordb_provider_factory = VectorDBProviderFactory(settings)
 
-        # generation client
-        app.generation_client = llm_provider_factory.create(provider=settings.GENERATION_BACKEND)
+        # generation client (supports native_gemini or legacy openai_compatible)
+        gen_provider = getattr(settings, "LLM_GENERATION_PROVIDER", "openai_compatible").strip().lower()
+        if gen_provider == "native_gemini":
+            app.generation_client = llm_provider_factory.create(provider="native_gemini")
+        else:
+            app.generation_client = llm_provider_factory.create(provider=settings.GENERATION_BACKEND)
         app.generation_client.set_generation_model(model_id=settings.GENERATION_MODEL_ID)
         if hasattr(app.generation_client, "set_fallback_model") and getattr(settings, "FALLBACK_MODEL_ID", None):
             app.generation_client.set_fallback_model(model_id=settings.FALLBACK_MODEL_ID)
