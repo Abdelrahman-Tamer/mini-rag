@@ -7,6 +7,8 @@ from helpers.guest_session import (
     verify_guest_token,
     get_guest_remaining_questions,
     check_guest_limits,
+    commit_guest_quota,
+    refund_guest_quota,
     get_guest_conversation_history,
     append_guest_conversation_turn,
 )
@@ -121,6 +123,7 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
     guest_id = None
     session_id = None
     guest_remaining = None
+    req_id = None
 
     if is_guest:
         guest_secret = resolve_guest_secret(app_settings)
@@ -148,7 +151,9 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
                 }
             )
 
-        # Check guest rate limits and daily quota
+        req_id = (getattr(chat_request, "request_id", None) and chat_request.request_id.strip()) or uuid.uuid4().hex[:12]
+
+        # Check guest rate limits and reserve daily quota slot
         try:
             is_allowed, retry_after, remaining, error_type = check_guest_limits(
                 guest_id=guest_id,
@@ -159,6 +164,7 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
                 daily_window=getattr(app_settings, "GUEST_DAILY_WINDOW_SECONDS", 86400),
                 burst_limit=getattr(app_settings, "GUEST_BURST_LIMIT", 10),
                 burst_window=getattr(app_settings, "GUEST_BURST_WINDOW_SECONDS", 60),
+                request_id=req_id,
             )
         except RuntimeError as r_err:
             logger.critical(f"Distributed rate limiter unavailable for guest under fail-closed policy: {r_err}")
@@ -242,6 +248,8 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
 
     text = chat_request.text.strip() if chat_request.text else ""
     if not text:
+        if is_guest and guest_id and req_id:
+            refund_guest_quota(guest_id, req_id, app_settings.REDIS_URL, getattr(app_settings, "REQUIRE_REDIS_RATE_LIMITER", False), app_settings.ENVIRONMENT)
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={
@@ -251,6 +259,8 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
         )
 
     if len(text) > app_settings.CHAT_MAX_MESSAGE_LENGTH:
+        if is_guest and guest_id and req_id:
+            refund_guest_quota(guest_id, req_id, app_settings.REDIS_URL, getattr(app_settings, "REQUIRE_REDIS_RATE_LIMITER", False), app_settings.ENVIRONMENT)
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={
@@ -290,6 +300,13 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
             answer = NLPController._clean_tourism_terminology(answer)
 
         if is_guest and session_id:
+            commit_guest_quota(
+                guest_id=guest_id,
+                req_id=req_id,
+                redis_url=app_settings.REDIS_URL,
+                require_redis=getattr(app_settings, "REQUIRE_REDIS_RATE_LIMITER", False),
+                env=app_settings.ENVIRONMENT,
+            )
             append_guest_conversation_turn(
                 session_id=session_id,
                 user_msg=text,
@@ -333,6 +350,8 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
             category=chat_request.category,
         )
     except Exception as e:
+        if is_guest and guest_id and req_id:
+            refund_guest_quota(guest_id, req_id, app_settings.REDIS_URL, getattr(app_settings, "REQUIRE_REDIS_RATE_LIMITER", False), app_settings.ENVIRONMENT)
         error_id = uuid.uuid4().hex[:8]
         logger.error(f"Error during nlp_controller.chat [error_id={error_id}]: {traceback.format_exc()}")
         return JSONResponse(
@@ -360,6 +379,8 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
                 system_prompt=fallback_prompt,
             )
         except Exception as e:
+            if is_guest and guest_id and req_id:
+                refund_guest_quota(guest_id, req_id, app_settings.REDIS_URL, getattr(app_settings, "REQUIRE_REDIS_RATE_LIMITER", False), app_settings.ENVIRONMENT)
             error_id = uuid.uuid4().hex[:8]
             logger.error(f"Error during fallback generation [error_id={error_id}]: {traceback.format_exc()}")
             is_ar = any('\u0600' <= char <= '\u06ff' for char in text)
@@ -379,6 +400,8 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
                 }
             )
         if not answer:
+            if is_guest and guest_id and req_id:
+                refund_guest_quota(guest_id, req_id, app_settings.REDIS_URL, getattr(app_settings, "REQUIRE_REDIS_RATE_LIMITER", False), app_settings.ENVIRONMENT)
             error_id = uuid.uuid4().hex[:8]
             logger.error(f"Fallback generation returned empty answer or provider failed [error_id={error_id}]")
             is_ar = any('\u0600' <= char <= '\u06ff' for char in text)
@@ -402,6 +425,13 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
             answer = NLPController._clean_tourism_terminology(answer)
 
         if is_guest and session_id:
+            commit_guest_quota(
+                guest_id=guest_id,
+                req_id=req_id,
+                redis_url=app_settings.REDIS_URL,
+                require_redis=getattr(app_settings, "REQUIRE_REDIS_RATE_LIMITER", False),
+                env=app_settings.ENVIRONMENT,
+            )
             append_guest_conversation_turn(
                 session_id=session_id,
                 user_msg=text,
@@ -457,6 +487,8 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
             prior_history=prior_history
         )
     except Exception as e:
+        if is_guest and guest_id and req_id:
+            refund_guest_quota(guest_id, req_id, app_settings.REDIS_URL, getattr(app_settings, "REQUIRE_REDIS_RATE_LIMITER", False), app_settings.ENVIRONMENT)
         error_id = uuid.uuid4().hex[:8]
         logger.error(f"Error during generate_chat_answer [error_id={error_id}]: {traceback.format_exc()}")
         is_ar = any('\u0600' <= char <= '\u06ff' for char in text)
@@ -477,6 +509,8 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
         )
 
     if not answer:
+        if is_guest and guest_id and req_id:
+            refund_guest_quota(guest_id, req_id, app_settings.REDIS_URL, getattr(app_settings, "REQUIRE_REDIS_RATE_LIMITER", False), app_settings.ENVIRONMENT)
         error_id = uuid.uuid4().hex[:8]
         logger.error(f"Chat generation returned empty answer or provider failed [error_id={error_id}]")
         is_ar = any('\u0600' <= char <= '\u06ff' for char in text)
@@ -500,6 +534,13 @@ async def chat_endpoint(request: Request, chat_request: ChatRequest):
         answer = NLPController._clean_tourism_terminology(answer)
 
     if is_guest and session_id:
+        commit_guest_quota(
+            guest_id=guest_id,
+            req_id=req_id,
+            redis_url=app_settings.REDIS_URL,
+            require_redis=getattr(app_settings, "REQUIRE_REDIS_RATE_LIMITER", False),
+            env=app_settings.ENVIRONMENT,
+        )
         append_guest_conversation_turn(
             session_id=session_id,
             user_msg=text,
